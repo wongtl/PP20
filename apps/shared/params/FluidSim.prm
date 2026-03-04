@@ -1,7 +1,7 @@
 MeshGeometry
 {
     // Load restart from apps/storage/<case_name>/checkpoint/fluidsim_state_*
-    // checkpointFolder "1A";
+    checkpointFolder "7248243";
 
     // Roles: 1 FLUID_CONTAINER, N SOLID_OBSTACLE
     // Region placement: each region is centered to the interior domain first,
@@ -38,7 +38,7 @@ Physical
     // k_phys     0.1207;         // W/(m*K)
     // beta       2.322e-3;       // 1/K
 
-    // Active setup with target Pr = 0.71 and buoyancy disabled (Ra_factor = 0).
+    // Active setup with target Pr = 0.71 and Ra tuned via Ra_factor.
     nu_phys    1.568e-5;             // m^2/s
     alpha_phys 2.208450704225352e-5; // m^2/s  (nu_phys / alpha_phys = 0.71)
     k_phys     0.0262;               // W/(m*K)
@@ -50,7 +50,7 @@ Physical
     deltaT_K      0.1;
     g             9.81;        // m/s^2
     // manual scale factor applied to Ra and buoyancy forcing
-    Ra_factor 0;
+    Ra_factor 3.322276864400409e-4;
 }
 
 Resolution

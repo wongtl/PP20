@@ -531,7 +531,7 @@ RUN_STARTED=1
 FLAGS=(
     --minimalLogs 1000
     --thermalLogs 100
-    --initPerturb 0
+    --initPerturb 0.003
     --vtkinit "$VTKINIT"
     --timesteps "$TIMESTEPS"
     --checkpointEvery "$CHECKPOINT_EVERY"
