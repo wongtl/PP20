@@ -1,0 +1,180 @@
+MeshGeometry
+{
+    // Load restart from apps/storage/<case_name>/checkpoint/fluidsim_state_*
+    // checkpointFolder "1A";
+
+    // Roles: 1 FLUID_CONTAINER, N SOLID_OBSTACLE
+    // Region placement: each region is centered to the interior domain first,
+    // then shifted by translate fractions in [-0.5, 0.5] of interior domain size.
+    Region
+    {
+        name "container";
+        meshFile "geometry/cube_rbc.PLY";
+        role "FLUID_CONTAINER";
+        // Mesh file is in mm; convert to meters.
+        scale 0.001;
+        translate < 0, 0, 0 >;
+    }
+
+    // Region
+    // {
+    //     name "obstacle";
+    //     meshFile "geometry/SuspendedPlateONLY_redinnertop_greeninnerrest.PLY";
+    //     role "SOLID_OBSTACLE";
+    //      // Mesh file is in mm; convert to meters.
+    //     scale 0.001;
+    //     translate < 0, -0.2, 0 >;
+    // }
+
+    // Required free margin (in fine cells) between mesh and each domain boundary (x,y,z).
+    paddingCells < 1, 1, 1 >;
+}
+
+Physical
+{
+    // LXe @ ~170.25 K (constant-property).
+    // nu_phys    1.5946476e-7;   // m^2/s
+    // alpha_phys 7.0890653e-8;   // m^2/s
+    // k_phys     0.1207;         // W/(m*K)
+    // beta       2.322e-3;       // 1/K
+
+    // Active setup with target Pr = 0.71 and buoyancy disabled (Ra_factor = 0).
+    nu_phys    1.568e-5;             // m^2/s
+    alpha_phys 2.208450704225352e-5; // m^2/s  (nu_phys / alpha_phys = 0.71)
+    k_phys     0.0262;               // W/(m*K)
+    beta       3.4e-3;               // 1/K
+    
+    // Physical domain size (meters).
+    domain_size   < 1, 1, 1 >; // interior physical size (excluding computational padding)
+    L_char        1;           // characteristic length basis for Ra
+    deltaT_K      0.1;
+    g             9.81;        // m/s^2
+    // manual scale factor applied to Ra and buoyancy forcing
+    Ra_factor 0;
+}
+
+Resolution
+{
+    // Finest lattice cells for the interior physical domain (excludes padding region).
+    // Total lattice cells are derived as: interiorFineCells + 2 * MeshGeometry.paddingCells.
+    // Physical.full_size is derived from domain_size and total lattice cells.
+    // Total lattice cells must match Physical.full_size aspect ratio and be divisible by cellsPerBlock.
+    interiorFineCells < 200, 200, 200 >;
+    // Cells per block in x/y/z.
+    cellsPerBlock < 202, 202, 202 >;
+    // Number of blocks should be divisible by ntasks for proper performance.
+}
+
+Numerics
+{
+    // LBM viscosity on the finest level in lattice units.
+    nu_lat_target 0.01;
+}
+
+DomainSetup
+{
+    // Periodicity only. rootBlocks are derived from totalFineCells and cellsPerBlock.
+    periodic < 0, 0, 0 >;
+}
+
+Parameters
+{
+    // timesteps is launcher-owned via run_sim_gpu.sbatch (TIMESTEPS -> --timesteps).
+
+    // Reference theta_ref (dimensionless):
+    // - used as a fixed constant only when theta_update == 0
+    // - when theta_update > 0, theta_ref is computed at startup (and periodically)
+    //   from the domain average
+    theta_ref 0.0;
+
+    // Update frequency for global theta_ref reduction (0 => fixed theta_ref = theta_ref).
+    theta_update 100;
+}
+
+ColorBC
+{
+    // thermal options:
+    //   DIRICHLET* / ADIABATIC* / HEATLOAD*:
+    //     thermal type is inferred from region name prefix (thermal field assumed).
+    //   INLET* / OUTLET* / PRESSURE*:
+    //     thermal must be provided explicitly as "Dirichlet" or "Adiabatic".
+    //
+    // region name semantics:
+    //   DIRICHLET* / ADIABATIC* / HEATLOAD* / INLET* / OUTLET* / PRESSURE*
+    //   Example: DIRICHLET1, DIRICHLET2, ADIABATIC1, HEATLOAD1, INLET1, OUTLET1, PRESSURE1
+    //
+    // DIRICHLET* regions use:
+    //   theta   <value>
+    //   Nu      <true|false>   // enable Nu logging as Nu_<NormalizedName>
+    //                          // e.g. DIRICHLET1 -> Nu_1, DIRICHLET2 -> Nu_2
+    //
+    // ADIABATIC* regions use:
+    //   (no thermal value input)
+    //
+    // HEATLOAD* regions use:
+    //   heatload_watts <value>
+    //   Input q'' in W/m^2, converted to finest-level lattice heatload via:
+    //   heatload_lat = heatload_watts * dx_phys / (k_phys * deltaT_K)
+    //
+    // INLET*/OUTLET* regions use:
+    //   velocity <ux,uy,uz>
+    //   rho      <value>
+    //   thermal  "Dirichlet" or "Adiabatic"
+    //   theta    <value>
+    //
+    // PRESSURE* regions use:
+    //   flow     "both" | "in" | "out"   // optional; default "both"
+    //   rho      <value>
+    //   thermal  "Dirichlet" or "Adiabatic"
+    //   theta    <value>
+
+    Region
+    {
+        name "DIRICHLET1";
+        rgb < 255, 0, 0 >;
+        theta 1.0;
+        Nu true;
+    }
+
+    Region
+    {
+        name "DIRICHLET2";
+        rgb < 0, 0, 255 >;
+        theta 0.0;
+        Nu true;
+    }
+
+    Region
+    {
+        name "ADIABATIC1";
+        rgb < 0, 255, 0 >;
+    }
+
+    // heatload_watts [W/m^2]
+    // Region
+    // {
+    //     name "HEATLOAD1";
+    //     rgb < 0, 255, 255 >;
+    //     heatload_watts 0.0;
+    // }
+
+    // Region
+    // {
+    //     name "INLET1";
+    //     rgb < 255, 255, 0 >;
+    //     thermal "Dirichlet";
+    //     velocity < 0.0, 0.0, -0.1 >;
+    //     rho 1.0;
+    //     theta 0.0;
+    // }
+    
+    // Region
+    // {
+    //     name "OUTLET1";
+    //     rgb < 255, 0, 255 >;
+    //     thermal "Adiabatic";
+    //     velocity < 0.0, 0.0, -0.1 >;
+    //     rho 1.0;
+    //     theta 0.0;
+    // }
+}

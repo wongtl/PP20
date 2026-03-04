@@ -1,0 +1,145 @@
+diff --git a/src/walberla/sweepgen/boundaries/GenericBoundary.hpp b/src/walberla/sweepgen/boundaries/GenericBoundary.hpp
+index d9f4744be..b2029245c 100644
+--- a/src/walberla/sweepgen/boundaries/GenericBoundary.hpp
++++ b/src/walberla/sweepgen/boundaries/GenericBoundary.hpp
+@@ -86,8 +86,6 @@ concept ContainsCallable = requires(F f, Vector3<real_t> v) {
+ template< typename Impl >
+ class GenericBoundaryFactory
+ {
+-   using ImplTraits = GenericBoundaryFactoryImplTraits< Impl >;
+-
+  public:
+    GenericBoundaryFactory(const shared_ptr< StructuredBlockForest > blocks)
+       : blocks_{ blocks }
+@@ -97,8 +95,10 @@ class GenericBoundaryFactory
+    auto fromFlagField(BlockDataID flagFieldID, field::FlagUID boundaryFlagUID, field::FlagUID fluidFlagUID)
+    {
+       using flag_t      = typename FlagField_T::flag_t;
+-      using IndexList_T = typename ImplTraits::IndexList_T;
+-      using Stencil_T     = typename ImplTraits::Stencil_T;
++      using Stencil_T = typename Impl::Stencil;
++      using IdxStruct_T = typename Impl::IdxStruct;
++      using IndexListMemTag_T = typename Impl::memtag_t;
++      using IndexList_T = walberla::experimental::sweep::SparseIndexList< IdxStruct_T, IndexListMemTag_T >;
+ 
+       IndexList_T indexList{ *blocks_ };
+ 
+@@ -138,11 +138,16 @@ class GenericBoundaryFactory
+     * 
+     * @param pred Predicate to select boundary links.
+     */
+-   template< LinkPredicate<typename ImplTraits::DataStruct_T> P >
++   template< typename P >
+    auto fromLinks(P pred)
+    {
+-      using IndexList_T = typename ImplTraits::IndexList_T;
+-      using Stencil_T     = typename ImplTraits::Stencil_T;
++      using Stencil_T = typename Impl::Stencil;
++      using IdxStruct_T = typename Impl::IdxStruct;
++      using DataStruct_T = typename Impl::DataStruct;
++      using IndexListMemTag_T = typename Impl::memtag_t;
++      using IndexList_T = walberla::experimental::sweep::SparseIndexList< IdxStruct_T, IndexListMemTag_T >;
++
++      static_assert(LinkPredicate<P, DataStruct_T>);
+ 
+       IndexList_T indexList{ *blocks_ };
+       walberla::experimental::sweep::SerialSweeper sweeper{ blocks_ };
+@@ -159,7 +164,7 @@ class GenericBoundaryFactory
+                Cell wallCell{ fluidCell + dir };
+                PotentialBoundaryLink link { .block=block, .fluidCell=fluidCell, .dir=dir, .wallCell=wallCell };
+ 
+-               if constexpr ( std::same_as< typename ImplTraits::DataStruct_T, void > ) {
++               if constexpr ( std::same_as< DataStruct_T, void > ) {
+                   if (pred(link)) {
+                      idxVector.emplace_back(fluidCell.x(), fluidCell.y(), fluidCell.z(), dir);
+                   }
+@@ -177,11 +182,15 @@ class GenericBoundaryFactory
+ 
+ 
+    template <ContainsCallable Body>
+-   requires(std::same_as<typename ImplTraits::DataStruct_T, void >)
+    auto fromBody(Body body)
+    {
+-      using IndexList_T = typename ImplTraits::IndexList_T;
+-      using Stencil_T     = typename ImplTraits::Stencil_T;
++      using Stencil_T = typename Impl::Stencil;
++      using IdxStruct_T = typename Impl::IdxStruct;
++      using DataStruct_T = typename Impl::DataStruct;
++      using IndexListMemTag_T = typename Impl::memtag_t;
++      using IndexList_T = walberla::experimental::sweep::SparseIndexList< IdxStruct_T, IndexListMemTag_T >;
++
++      static_assert(std::same_as<DataStruct_T, void>);
+ 
+       IndexList_T indexList{ *blocks_ };
+       walberla::experimental::sweep::SerialSweeper sweeper{ blocks_ };
+@@ -210,12 +219,17 @@ class GenericBoundaryFactory
+    }
+ 
+ 
+-   template < ContainsCallable Body, ReturnsLinkData<typename ImplTraits::DataStruct_T> DataStruct>
+-   requires(!std::same_as< typename ImplTraits::DataStruct_T, void >)
++   template < ContainsCallable Body, typename DataStruct >
+    auto fromBody(Body body, DataStruct data)
+    {
+-      using IndexList_T = typename ImplTraits::IndexList_T;
+-      using Stencil_T     = typename ImplTraits::Stencil_T;
++      using Stencil_T = typename Impl::Stencil;
++      using IdxStruct_T = typename Impl::IdxStruct;
++      using DataStruct_T = typename Impl::DataStruct;
++      using IndexListMemTag_T = typename Impl::memtag_t;
++      using IndexList_T = walberla::experimental::sweep::SparseIndexList< IdxStruct_T, IndexListMemTag_T >;
++
++      static_assert(!std::same_as<DataStruct_T, void>);
++      static_assert(ReturnsLinkData<DataStruct, DataStruct_T>);
+ 
+       IndexList_T indexList{ *blocks_ };
+       walberla::experimental::sweep::SerialSweeper sweeper{ blocks_ };
+@@ -246,15 +260,19 @@ class GenericBoundaryFactory
+ 
+ 
+    template <ReturnsRealT DistFunc>
+-   requires(std::same_as<typename ImplTraits::DataStruct_T, void >)
+    auto fromDistanceFunction(DistFunc dist)
+    {
+       WALBERLA_LOG_WARNING_ON_ROOT("Creating boundary links from a distance function might be very slow for large meshes. You may use a voxelisation onto a flag field and create the boundary links from flag field instead.")
+       WcTimer simTimer;
+       simTimer.start();
+ 
+-      using IndexList_T = typename ImplTraits::IndexList_T;
+-      using Stencil_T     = typename ImplTraits::Stencil_T;
++      using Stencil_T = typename Impl::Stencil;
++      using IdxStruct_T = typename Impl::IdxStruct;
++      using DataStruct_T = typename Impl::DataStruct;
++      using IndexListMemTag_T = typename Impl::memtag_t;
++      using IndexList_T = walberla::experimental::sweep::SparseIndexList< IdxStruct_T, IndexListMemTag_T >;
++
++      static_assert(std::same_as<DataStruct_T, void>);
+ 
+       IndexList_T indexList{ *blocks_ };
+ 
+@@ -289,16 +307,21 @@ class GenericBoundaryFactory
+    }
+ 
+ 
+-   template < ReturnsRealT DistFunc, ReturnsLinkData<typename ImplTraits::DataStruct_T> DataStruct>
+-   requires(!std::same_as<typename ImplTraits::DataStruct_T, void >)
++   template < ReturnsRealT DistFunc, typename DataStruct >
+    auto fromDistanceFunction(DistFunc dist, DataStruct data)
+    {
+       WALBERLA_LOG_WARNING_ON_ROOT("Creating boundary links from a distance function might be very slow for large meshes. You may use a voxelisation onto a flag field and create the boundary links from flag field instead.")
+       WcTimer simTimer;
+       simTimer.start();
+ 
+-      using IndexList_T = typename ImplTraits::IndexList_T;
+-      using Stencil_T     = typename ImplTraits::Stencil_T;
++      using Stencil_T = typename Impl::Stencil;
++      using IdxStruct_T = typename Impl::IdxStruct;
++      using DataStruct_T = typename Impl::DataStruct;
++      using IndexListMemTag_T = typename Impl::memtag_t;
++      using IndexList_T = walberla::experimental::sweep::SparseIndexList< IdxStruct_T, IndexListMemTag_T >;
++
++      static_assert(!std::same_as<DataStruct_T, void>);
++      static_assert(ReturnsLinkData<DataStruct, DataStruct_T>);
+ 
+       IndexList_T indexList{ *blocks_ };
+ 
