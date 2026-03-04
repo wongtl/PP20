@@ -1,4 +1,3 @@
-
 # Benchmarks
 if ( WALBERLA_BUILD_BENCHMARKS )
     add_subdirectory ( benchmarks )
@@ -29,4 +28,14 @@ endif()
 # Python module
 if ( WALBERLA_BUILD_WITH_PYTHON )
     add_subdirectory( pythonmodule )
+endif()
+
+# FluidSim CPU app
+if ( EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/FluidSim_cpu )
+    add_subdirectory ( FluidSim_cpu )
+endif()
+
+# FluidSim GPU app
+if ( EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/FluidSim_gpu )
+    add_subdirectory ( FluidSim_gpu )
 endif()
