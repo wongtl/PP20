@@ -296,7 +296,7 @@ static double deterministicCenteredNoise(int gx, int gy, int gz)
 
 static CmdOptions parseArgs(int argc, char** argv)
 {
-    // Parse runtime flags supplied by launcher scripts (run_sim_*.sbatch / run_sim.sh).
+    // Parse runtime flags supplied by launcher scripts (run_sim_*.sbatch / run_sim_local.sh).
     CmdOptions cmd;
     const auto parseU64OrAbort = [](const std::string& flag, const char* rawValue) -> unsigned long long {
         try
