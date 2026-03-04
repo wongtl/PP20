@@ -1,6 +1,22 @@
 name: waLBerla Tests
 
-on: push
+on:
+  push:
+    paths:
+      - '**/CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/basicTests.yml'
+      - '**/*.c'
+      - '**/*.cc'
+      - '**/*.cpp'
+      - '**/*.cu'
+      - '**/*.cuh'
+      - '**/*.h'
+      - '**/*.hh'
+      - '**/*.hpp'
+      - '**/*.inl'
+      - '**/*.py'
+  workflow_dispatch:
 
 jobs:
   build:
