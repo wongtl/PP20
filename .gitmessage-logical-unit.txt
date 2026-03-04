@@ -1,0 +1,10 @@
+<area>: <meaningful change>
+
+Why:
+- <problem or motivation>
+
+What:
+- <key implementation detail>
+
+Validation:
+- <command and result>
