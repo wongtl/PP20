@@ -1,0 +1,865 @@
+#include "timeloop/all.h"
+#include "stencil/all.h"
+#include "field/FileIO.h"
+#include "vtk/VTKOutput.h"
+#include "walberla/experimental/sweep/SparseIndexList.hpp"
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+using walberla::real_t;
+using walberla::uint_t;
+
+#define FLUIDSIM_RUNTIME_ONLY
+#include "src/FluidSimRuntime.hpp"
+#undef FLUIDSIM_RUNTIME_ONLY
+
+#include "../../shared/helpers/VtkTimeMetadataHelpers.hpp"
+
+namespace fluidsim
+{
+
+int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
+{
+    // Validate required runtime bindings.
+    WALBERLA_CHECK(bool(binding.updateThetaRef), "updateThetaRef callback must be set.");
+    WALBERLA_CHECK(bool(binding.syncRuntimeToHostTheta));
+    WALBERLA_CHECK(bool(binding.syncRuntimeToHostRhoVelTheta));
+    WALBERLA_CHECK(bool(binding.syncRuntimeToHostPdfThetaRhoVel));
+    WALBERLA_CHECK(bool(binding.applyOpenBoundary));
+    WALBERLA_CHECK(
+        bool(binding.startCommunicatePdfTheta) && bool(binding.waitCommunicatePdfTheta),
+        "Both startCommunicatePdfTheta and waitCommunicatePdfTheta callbacks must be set.");
+    WALBERLA_CHECK(bool(binding.applyNoSlip));
+    WALBERLA_CHECK(bool(binding.thermalStep));
+    WALBERLA_CHECK(bool(binding.runStreamDense));
+    WALBERLA_CHECK(bool(binding.runStreamSparse));
+    WALBERLA_CHECK_NOT_NULLPTR(binding.fullFluidBlocks);
+    WALBERLA_CHECK_NOT_NULLPTR(binding.mixedBlocks);
+    WALBERLA_CHECK_NOT_NULLPTR(binding.thermalBCBlocks);
+    WALBERLA_CHECK_NOT_NULLPTR(binding.fluidCellIndexList);
+    WALBERLA_CHECK_NOT_NULLPTR(binding.boundaryFluidIndexList);
+    WALBERLA_CHECK_NOT_NULLPTR(binding.currentThetaRef);
+
+    // Unpack immutable runtime inputs.
+    const bool isRoot = binding.isRoot;
+    auto& cmd = binding.cmd;
+
+    const uint_t numTimesteps = binding.numTimesteps;
+    const uint_t thetaUpdateEvery = binding.thetaUpdateEvery;
+    const bool outerParallelActive = (cmd.parallelMode == ParallelMode::Outer);
+#ifndef _OPENMP
+    (void)outerParallelActive;
+#endif
+
+    // Unpack block storage and runtime callbacks.
+    auto blocks = binding.blocks;
+    auto blockForest = binding.blockForest;
+
+    auto& updateThetaRef = binding.updateThetaRef;
+    auto& syncRuntimeToHostTheta = binding.syncRuntimeToHostTheta;
+    auto& syncRuntimeToHostRhoVelTheta = binding.syncRuntimeToHostRhoVelTheta;
+    auto& syncRuntimeToHostPdfThetaRhoVel = binding.syncRuntimeToHostPdfThetaRhoVel;
+    auto& applyOpenBoundary = binding.applyOpenBoundary;
+    auto& startCommunicatePdfTheta = binding.startCommunicatePdfTheta;
+    auto& waitCommunicatePdfTheta = binding.waitCommunicatePdfTheta;
+    auto& applyNoSlip = binding.applyNoSlip;
+    auto& thermalStep = binding.thermalStep;
+    auto& runStreamDense = binding.runStreamDense;
+    auto& runStreamSparse = binding.runStreamSparse;
+
+    auto& fullFluidBlocks = *binding.fullFluidBlocks;
+    auto& mixedBlocks = *binding.mixedBlocks;
+    auto& thermalBCBlocks = *binding.thermalBCBlocks;
+
+    auto& fluidCellIndexList = *binding.fluidCellIndexList;
+    auto& boundaryFluidIndexList = *binding.boundaryFluidIndexList;
+
+    const auto pdfID = binding.pdfID;
+    const auto densityID = binding.densityID;
+    const auto velocityID = binding.velocityID;
+    const auto thetaID = binding.thetaID;
+    const auto densityRuntimeID = binding.densityRuntimeID;
+    const auto velocityRuntimeID = binding.velocityRuntimeID;
+    const auto thetaRuntimeID = binding.thetaRuntimeID;
+    const auto cellTypeID = binding.cellTypeID;
+    const auto bcIdID = binding.bcIdID;
+    const auto thermalTypeID = binding.thermalTypeID;
+    const auto thermalValueID = binding.thermalValueID;
+    const auto regionIdID = binding.regionIdID;
+    (void)syncRuntimeToHostTheta;
+    (void)syncRuntimeToHostRhoVelTheta;
+    (void)syncRuntimeToHostPdfThetaRhoVel;
+    (void)densityRuntimeID;
+    (void)velocityRuntimeID;
+    (void)thetaRuntimeID;
+
+    auto& currentThetaRef = *binding.currentThetaRef;
+    const real_t thetaDirichletMax = binding.thetaDirichletMax;
+    const real_t thetaDirichletMin = binding.thetaDirichletMin;
+    const double lCharLatFine = binding.lCharLatFine;
+    const auto nuFacePrimitive = [](double thetaWall, double thetaFluid, double invDxLocal) {
+        return (thetaWall - thetaFluid) * (2.0 * invDxLocal);
+    };
+    const auto nuOutputLabelFromRegionName = [](const std::string& regionName) {
+        std::string label = regionName;
+        const std::string upperName = toUpper(regionName);
+        constexpr const char* prefix = "DIRICHLET";
+        constexpr size_t prefixLen = size_t(9);
+        if (upperName.rfind(prefix, size_t(0)) == size_t(0))
+        {
+            label = regionName.substr(prefixLen);
+            while (!label.empty() && (label.front() == '_' || label.front() == '-' || label.front() == ' '))
+                label.erase(label.begin());
+        }
+        if (label.empty())
+            label = regionName;
+        return label;
+    };
+
+    const auto checkpointPaths = binding.checkpointPaths;
+    const auto& geometryRegions = binding.checkpointRegions;
+    const auto& nuOutputRegions = binding.nuOutputRegions;
+    const auto& nuVtkFields = binding.nuVtkFields;
+
+    const auto domainSizePhys = binding.domainSizePhys;
+    const auto paddingSizePhys = binding.paddingSizePhys;
+    const auto fullSizePhys = binding.fullSizePhys;
+    const auto interiorFineCells = binding.interiorFineCells;
+    const auto totalFineCells = binding.totalFineCells;
+    const auto cellsPerBlock = binding.cellsPerBlock;
+    const auto paddingFineCells = binding.paddingFineCells;
+    const auto periodicFlags = binding.periodicFlags;
+
+    constexpr const char* outputBaseDir = kOutputBaseDir;
+    const double dtPhysFine = binding.dtPhysFine;
+
+    WALBERLA_ROOT_SECTION()
+    {
+        ensureDirectory(std::filesystem::path(outputBaseDir), "create vtk output base directory");
+    }
+    WALBERLA_MPI_SECTION()
+    {
+        MPI_Barrier(walberla::mpi::MPIManager::instance()->comm());
+    }
+
+    const uint_t minimalLogCadence = cmd.minimalLogsEvery;
+    const uint_t thermalLogCadence = cmd.thermalLogsEvery;
+    const uint_t checkpointCadence = cmd.checkpointEvery;
+    const uint_t vtkWriteFrequency = binding.vtkWriteFrequency;
+    const bool vtkWriteAtStepZero = cmd.vtkInit;
+    auto cadenceDue = [&](uint_t step, uint_t cadence, bool includeZero) -> bool {
+        if (cadence == uint_t(0))
+            return false;
+        if (!includeZero && step == uint_t(0))
+            return false;
+        return (step % cadence) == uint_t(0);
+    };
+
+    using LbStencil = walberla::stencil::D3Q19;
+    using PdfField = walberla::field::GhostLayerField<real_t, LbStencil::Q>;
+    using ScalarField = walberla::field::GhostLayerField<real_t, 1>;
+    using VecField = walberla::field::GhostLayerField<real_t, 3>;
+    using CellTypeField = walberla::field::GhostLayerField<walberla::uint8_t, 1>;
+    using BcField = walberla::field::GhostLayerField<walberla::uint16_t, 1>;
+    using ThermalTypeField = walberla::field::GhostLayerField<walberla::uint8_t, 1>;
+    using RegionIdField = walberla::field::GhostLayerField<walberla::uint16_t, 1>;
+
+    const double invDxLevel0 = 1.0;
+    const double faceAreaLevel0 = 1.0;
+    const double cellVolumeLevel0 = 1.0;
+    const double substepsPerCoarseStepLevel0 = 1.0;
+
+    // Core single-level timestep order.
+    auto runStreamLevel = [&]() {
+#ifdef _OPENMP
+        if (outerParallelActive)
+        {
+            #pragma omp parallel
+            {
+                const int64_t fullFluidBlockCount = int64_t(fullFluidBlocks.size());
+                #pragma omp for schedule(static)
+                for (int64_t i = 0; i < fullFluidBlockCount; ++i)
+                    runStreamDense(fullFluidBlocks[size_t(i)]);
+
+                const int64_t mixedBlockCount = int64_t(mixedBlocks.size());
+                #pragma omp for schedule(static)
+                for (int64_t i = 0; i < mixedBlockCount; ++i)
+                    runStreamSparse(mixedBlocks[size_t(i)]);
+            }
+            return;
+        }
+#endif
+        for (auto* block : fullFluidBlocks)
+            runStreamDense(block);
+        for (auto* block : mixedBlocks)
+            runStreamSparse(block);
+    };
+    auto runSingleLevelStep = [&]() {
+        runStreamLevel();
+        startCommunicatePdfTheta();
+        waitCommunicatePdfTheta();
+        // Keep validated semantics: Stream -> Communicate -> Boundary -> Thermal.
+        applyNoSlip();
+        applyOpenBoundary();
+        thermalStep();
+    };
+
+    // Pre-timestep refresh to keep initial boundary/theta state consistent.
+    {
+        if (thetaUpdateEvery > uint_t(0))
+            updateThetaRef();
+        applyOpenBoundary();
+    }
+
+    // Checkpoint metadata/file helpers.
+    auto writeCheckpointMetadataFields = [&](std::ostream& out) {
+        out << "region_count=" << geometryRegions.size() << "\n";
+        for (size_t regionIdx = size_t(0); regionIdx < geometryRegions.size(); ++regionIdx)
+        {
+            const auto& region = geometryRegions[regionIdx];
+            out << "region_" << regionIdx
+                << "=" << region.name
+                << "|" << (region.role == GeometryRole::FluidContainer ? "FLUID_CONTAINER" : "SOLID_OBSTACLE")
+                << "|" << region.sourceFileBytes
+                << "|" << region.sourceFileHash
+                << "|" << double(region.scale)
+                << "|" << vec3ToCsv(region.translateFraction) << "\n";
+        }
+        out << "domain_size=" << vec3ToCsv(domainSizePhys) << "\n";
+        out << "padding_size=" << vec3ToCsv(paddingSizePhys) << "\n";
+        out << "full_size=" << vec3ToCsv(fullSizePhys) << "\n";
+        out << "interior_fine_cells=" << vec3ToCsv(interiorFineCells) << "\n";
+        out << "total_fine_cells=" << vec3ToCsv(totalFineCells) << "\n";
+        out << "cells_per_block=" << vec3ToCsv(cellsPerBlock) << "\n";
+        out << "padding_cells=" << vec3ToCsv(paddingFineCells) << "\n";
+        out << "periodic=" << (periodicFlags[0] ? 1 : 0) << ","
+            << (periodicFlags[1] ? 1 : 0) << ","
+            << (periodicFlags[2] ? 1 : 0) << "\n";
+    };
+
+    auto cleanupCheckpointAuxDirs = [&](const std::filesystem::path& checkpointDir, const char* context) {
+        const auto checkpointStagingDir =
+            checkpointDir.parent_path() / (checkpointDir.filename().string() + "_new");
+        const auto checkpointBackupDir =
+            checkpointDir.parent_path() / (checkpointDir.filename().string() + "_old");
+
+        WALBERLA_ROOT_SECTION()
+        {
+            auto cleanupDir = [&](const std::filesystem::path& dir) {
+                std::error_code ec;
+                std::filesystem::remove_all(dir, ec);
+                if (ec)
+                {
+                    WALBERLA_LOG_WARNING("Failed to " << context << " '" << dir.string()
+                                         << "': " << ec.message());
+                }
+            };
+            cleanupDir(checkpointStagingDir);
+            cleanupDir(checkpointBackupDir);
+        }
+        WALBERLA_MPI_SECTION()
+        {
+            MPI_Barrier(walberla::mpi::MPIManager::instance()->comm());
+        }
+    };
+
+    auto writeCheckpointState = [&](uint_t checkpointStep,
+                                    const walberla::BlockDataID pdfWriteID,
+                                    const walberla::BlockDataID densityWriteID,
+                                    const walberla::BlockDataID velocityWriteID,
+                                    const walberla::BlockDataID thetaWriteID) {
+        const auto checkpointDir = checkpointPaths.forestFile.parent_path();
+        const auto checkpointStagingDir =
+            checkpointDir.parent_path() / (checkpointDir.filename().string() + "_new");
+        const auto checkpointBackupDir =
+            checkpointDir.parent_path() / (checkpointDir.filename().string() + "_old");
+
+        CheckpointPaths stagedCheckpointPaths = checkpointPaths;
+        stagedCheckpointPaths.forestFile = checkpointStagingDir / checkpointPaths.forestFile.filename();
+        stagedCheckpointPaths.pdfFile = checkpointStagingDir / checkpointPaths.pdfFile.filename();
+        stagedCheckpointPaths.densityFile = checkpointStagingDir / checkpointPaths.densityFile.filename();
+        stagedCheckpointPaths.velocityFile = checkpointStagingDir / checkpointPaths.velocityFile.filename();
+        stagedCheckpointPaths.thetaFile = checkpointStagingDir / checkpointPaths.thetaFile.filename();
+        stagedCheckpointPaths.metaFile = checkpointStagingDir / checkpointPaths.metaFile.filename();
+
+        WALBERLA_ROOT_SECTION()
+        {
+            ensureDirectory(checkpointDir.parent_path(), "create checkpoint parent directory");
+
+            std::error_code ec;
+            std::filesystem::remove_all(checkpointStagingDir, ec);
+            if (ec)
+            {
+                WALBERLA_ABORT("Failed to clear checkpoint staging directory: " << checkpointStagingDir.string()
+                               << " (" << ec.message() << ")");
+            }
+            ensureDirectory(checkpointStagingDir, "create checkpoint staging directory");
+        }
+        WALBERLA_MPI_SECTION()
+        {
+            MPI_Barrier(walberla::mpi::MPIManager::instance()->comm());
+        }
+
+        walberla::field::writeToFile<PdfField>(stagedCheckpointPaths.pdfFile.string(), blocks->getBlockStorage(), pdfWriteID);
+        walberla::field::writeToFile<ScalarField>(stagedCheckpointPaths.densityFile.string(), blocks->getBlockStorage(), densityWriteID);
+        walberla::field::writeToFile<VecField>(stagedCheckpointPaths.velocityFile.string(), blocks->getBlockStorage(), velocityWriteID);
+        walberla::field::writeToFile<ScalarField>(stagedCheckpointPaths.thetaFile.string(), blocks->getBlockStorage(), thetaWriteID);
+        blockForest->saveToFile(stagedCheckpointPaths.forestFile.string());
+
+        WALBERLA_MPI_SECTION()
+        {
+            MPI_Barrier(walberla::mpi::MPIManager::instance()->comm());
+        }
+
+        WALBERLA_ROOT_SECTION()
+        {
+            std::ofstream metaOut(stagedCheckpointPaths.metaFile);
+            if (!metaOut)
+                WALBERLA_ABORT("Failed to write checkpoint metadata file: " << stagedCheckpointPaths.metaFile.string());
+            metaOut << std::setprecision(std::numeric_limits<double>::max_digits10);
+            metaOut << "step=" << checkpointStep << "\n";
+            metaOut << "checkpoint_format=field_io_v1\n";
+            writeCheckpointMetadataFields(metaOut);
+            metaOut.flush();
+            if (!metaOut)
+                WALBERLA_ABORT("Failed while writing checkpoint metadata file: " << stagedCheckpointPaths.metaFile.string());
+        }
+
+        WALBERLA_MPI_SECTION()
+        {
+            MPI_Barrier(walberla::mpi::MPIManager::instance()->comm());
+        }
+
+        WALBERLA_ROOT_SECTION()
+        {
+            std::error_code ec;
+            std::filesystem::remove_all(checkpointBackupDir, ec);
+            if (ec)
+            {
+                WALBERLA_LOG_WARNING("Failed to clear previous checkpoint backup directory: "
+                                     << checkpointBackupDir.string() << " (" << ec.message() << ")");
+            }
+
+            ec.clear();
+            const bool checkpointDirExists = std::filesystem::exists(checkpointDir, ec);
+            if (ec)
+            {
+                WALBERLA_ABORT("Failed to query checkpoint directory state: "
+                               << checkpointDir.string() << " (" << ec.message() << ")");
+            }
+
+            if (checkpointDirExists)
+            {
+                ec.clear();
+                std::filesystem::rename(checkpointDir, checkpointBackupDir, ec);
+                if (ec)
+                {
+                    WALBERLA_ABORT("Failed to rotate checkpoint directory to backup: "
+                                   << checkpointDir.string() << " -> " << checkpointBackupDir.string()
+                                   << " (" << ec.message() << ")");
+                }
+            }
+
+            ec.clear();
+            std::filesystem::rename(checkpointStagingDir, checkpointDir, ec);
+            if (ec)
+            {
+                std::error_code rollbackEc;
+                if (checkpointDirExists)
+                    std::filesystem::rename(checkpointBackupDir, checkpointDir, rollbackEc);
+
+                WALBERLA_ABORT("Failed to promote checkpoint staging directory: "
+                               << checkpointStagingDir.string() << " -> " << checkpointDir.string()
+                               << " (" << ec.message() << ")"
+                               << (checkpointDirExists
+                                       ? std::string("; rollback ") +
+                                             (rollbackEc ? "failed: " + rollbackEc.message() : "succeeded")
+                                       : std::string("; no rollback needed")));
+            }
+        }
+
+        WALBERLA_MPI_SECTION()
+        {
+            MPI_Barrier(walberla::mpi::MPIManager::instance()->comm());
+        }
+
+        cleanupCheckpointAuxDirs(checkpointDir, "cleanup checkpoint auxiliary directory");
+
+        if (isRoot)
+            WALBERLA_LOG_INFO("CHECKPOINT t=" << checkpointStep);
+    };
+
+    // Main timeloop and diagnostics.
+    walberla::SweepTimeloop loop(blocks->getBlockStorage(), numTimesteps);
+    loop.addFuncBeforeTimeStep([&]() {
+        const uint_t step = loop.getCurrentTimeStep();
+        // Step 0 is handled by pre-loop refresh; in-loop cadence starts after step 0.
+        if (cadenceDue(step, thetaUpdateEvery, /* includeZero */ false))
+            updateThetaRef();
+        runSingleLevelStep();
+    }, "TimestepStep");
+
+    // Minimal diagnostics logger.
+    if (minimalLogCadence > uint_t(0))
+    {
+        double updatesPerCoarseStepLocal = 0.0;
+        double fluidVolumeLocal = 0.0;
+        {
+            const double substepsPerCoarseStep = substepsPerCoarseStepLevel0;
+            const double cellVolumeLocal = cellVolumeLevel0;
+            for (auto* block : fullFluidBlocks)
+            {
+                const auto bb = blocks->getBlockCellBB(*block);
+                const double fluidCellCount = double(bb.numCells());
+                updatesPerCoarseStepLocal += fluidCellCount * substepsPerCoarseStep;
+                fluidVolumeLocal += fluidCellCount * cellVolumeLocal;
+            }
+            for (auto* block : mixedBlocks)
+            {
+                const double fluidCellCount = double(fluidCellIndexList.getVector(*block).size());
+                updatesPerCoarseStepLocal += fluidCellCount * substepsPerCoarseStep;
+                fluidVolumeLocal += fluidCellCount * cellVolumeLocal;
+            }
+        }
+
+        const double updatesPerCoarseStep = walberla::mpi::allReduce(updatesPerCoarseStepLocal, walberla::mpi::SUM);
+        const double fluidVolume = walberla::mpi::allReduce(fluidVolumeLocal, walberla::mpi::SUM);
+
+        loop.addFuncAfterTimeStep([&, updatesPerCoarseStep, fluidVolume,
+                                      energyInit = false,
+                                      massInit = false,
+                                      lastTime = std::chrono::steady_clock::now(),
+                                      lastStep = uint_t(0),
+                                      lastEnergy = 0.0,
+                                      lastMass = 0.0]() mutable {
+            const uint_t step = loop.getCurrentTimeStep();
+            if (!cadenceDue(step, minimalLogCadence, false))
+                return;
+
+            double uMaxSqLocal = 0.0;
+            double uySqVolumeLocal = 0.0;
+            double uSqVolumeLocal = 0.0;
+            double energyLocal = 0.0;
+            double massLocal = 0.0;
+            const double cellVolumeLocalStep = cellVolumeLevel0;
+            for (auto* block : fullFluidBlocks)
+            {
+                auto* u = block->getData<VecField>(velocityID);
+                auto* theta = block->getData<ScalarField>(thetaID);
+                auto* rho = block->getData<ScalarField>(densityID);
+                const auto ci = u->xyzSize();
+                for (auto cell = ci.begin(); cell != ci.end(); ++cell)
+                {
+                    const int x = cell->x();
+                    const int y = cell->y();
+                    const int z = cell->z();
+                    const double ux = (*u)(x, y, z, 0);
+                    const double uy = (*u)(x, y, z, 1);
+                    const double uz = (*u)(x, y, z, 2);
+                    const double uSq = ux * ux + uy * uy + uz * uz;
+                    uMaxSqLocal = std::max(uMaxSqLocal, uSq);
+                    uySqVolumeLocal += (uy * uy) * cellVolumeLocalStep;
+                    uSqVolumeLocal += uSq * cellVolumeLocalStep;
+                    energyLocal += double((*theta)(x, y, z, 0)) * cellVolumeLocalStep;
+                    massLocal += double((*rho)(x, y, z, 0)) * cellVolumeLocalStep;
+                }
+            }
+            for (auto* block : mixedBlocks)
+            {
+                auto* u = block->getData<VecField>(velocityID);
+                auto* theta = block->getData<ScalarField>(thetaID);
+                auto* rho = block->getData<ScalarField>(densityID);
+                const auto& fluidIndices = fluidCellIndexList.getVector(*block);
+                for (const auto& idx : fluidIndices)
+                {
+                    const int x = int(idx.x);
+                    const int y = int(idx.y);
+                    const int z = int(idx.z);
+                    const double ux = (*u)(x, y, z, 0);
+                    const double uy = (*u)(x, y, z, 1);
+                    const double uz = (*u)(x, y, z, 2);
+                    const double uSq = ux * ux + uy * uy + uz * uz;
+                    uMaxSqLocal = std::max(uMaxSqLocal, uSq);
+                    uySqVolumeLocal += (uy * uy) * cellVolumeLocalStep;
+                    uSqVolumeLocal += uSq * cellVolumeLocalStep;
+                    energyLocal += double((*theta)(x, y, z, 0)) * cellVolumeLocalStep;
+                    massLocal += double((*rho)(x, y, z, 0)) * cellVolumeLocalStep;
+                }
+            }
+
+            const double uMaxSq = walberla::mpi::allReduce(uMaxSqLocal, walberla::mpi::MAX);
+            const double uySqVolume = walberla::mpi::allReduce(uySqVolumeLocal, walberla::mpi::SUM);
+            const double uSqVolume = walberla::mpi::allReduce(uSqVolumeLocal, walberla::mpi::SUM);
+            const double energy = walberla::mpi::allReduce(energyLocal, walberla::mpi::SUM);
+            const double mass = walberla::mpi::allReduce(massLocal, walberla::mpi::SUM);
+            const double uMax = std::sqrt(uMaxSq);
+            const double maMax = uMax * std::sqrt(3.0);
+            const double uySqMean = (fluidVolume > 0.0) ? (uySqVolume / fluidVolume) : 0.0;
+            const double uSqMean = (fluidVolume > 0.0) ? (uSqVolume / fluidVolume) : 0.0;
+            const double wrmsY = std::sqrt(std::max(0.0, uySqMean));
+            const double ek = 0.5 * uSqMean;
+            const auto now = std::chrono::steady_clock::now();
+            const double dtWindow = std::chrono::duration<double>(now - lastTime).count();
+            const double stepsPerS = (dtWindow > 0.0) ? (double(step - lastStep) / dtWindow) : 0.0;
+            const double mlups = updatesPerCoarseStep * stepsPerS / 1.0e6;
+            const double dE = energyInit ? (energy - lastEnergy) : 0.0;
+            const double dM = massInit ? (mass - lastMass) : 0.0;
+            const double rhoMean = (fluidVolume > 0.0) ? (mass / fluidVolume) : 0.0;
+
+            auto finite = [](double v) { return std::isfinite(v); };
+            if (!finite(uMaxSq) || !finite(uMax) || !finite(maMax) ||
+                !finite(mlups) || !finite(energy) || !finite(mass) ||
+                !finite(dE) || !finite(dM) || !finite(rhoMean) ||
+                !finite(wrmsY) || !finite(ek))
+            {
+                WALBERLA_ABORT(
+                    "Non-finite diagnostics at step " << step
+                    << " (uMaxSq=" << uMaxSq
+                    << ", uMax=" << uMax
+                    << ", MaMax=" << maMax
+                    << ", MLUPS=" << mlups
+                    << ", E=" << energy
+                    << ", M=" << mass
+                    << ", dE=" << dE
+                    << ", dM=" << dM
+                    << ", rhoMean=" << rhoMean
+                    << ", wrms_y=" << wrmsY
+                    << ", Ek=" << ek
+                    << "). Aborting (fail-fast).");
+            }
+
+            energyInit = true;
+            massInit = true;
+
+            if (isRoot)
+            {
+                WALBERLA_LOG_INFO("MINIMAL t=" << step
+                                 << " MLUPS=" << mlups
+                                 << " MaMax=" << maMax
+                                 << " dE=" << dE
+                                 << " M=" << mass
+                                 << " dM=" << dM
+                                 << " rhoMean=" << rhoMean
+                                 << " wrms_y=" << wrmsY
+                                 << " Ek=" << ek);
+            }
+            lastEnergy = energy;
+            lastMass = mass;
+            lastTime = now;
+            lastStep = step;
+        }, "MinimalLogger");
+    }
+
+    // Thermal diagnostics logger.
+    if (thermalLogCadence > uint_t(0))
+    {
+        std::unordered_map<walberla::uint16_t, size_t> nuRegionSlotById;
+        nuRegionSlotById.reserve(nuOutputRegions.size());
+        for (size_t idx = size_t(0); idx < nuOutputRegions.size(); ++idx)
+            nuRegionSlotById.emplace(nuOutputRegions[idx].regionId, idx);
+        std::vector<std::string> nuOutputLabels;
+        nuOutputLabels.reserve(nuOutputRegions.size());
+        for (const auto& region : nuOutputRegions)
+            nuOutputLabels.push_back(nuOutputLabelFromRegionName(region.regionName));
+        bool warnedZeroDeltaTheta = false;
+        auto warnedNuZeroArea = std::make_shared<std::vector<walberla::uint8_t>>(nuOutputRegions.size(), walberla::uint8_t(0));
+        std::vector<double> reduceLocal(nuOutputRegions.size() * size_t(2), 0.0);
+        std::vector<double> reduceGlobal(nuOutputRegions.size() * size_t(2), 0.0);
+        std::vector<double> localFluxArea(nuOutputRegions.size(), 0.0);
+        std::vector<double> localArea(nuOutputRegions.size(), 0.0);
+        std::vector<double> nuByRegion(nuOutputRegions.size(), std::numeric_limits<double>::quiet_NaN());
+        loop.addFuncAfterTimeStep(
+            [&, nuRegionSlotById, nuOutputLabels, warnedNuZeroArea, warnedZeroDeltaTheta,
+             reduceLocal = std::move(reduceLocal), reduceGlobal = std::move(reduceGlobal),
+             localFluxArea = std::move(localFluxArea), localArea = std::move(localArea),
+             nuByRegion = std::move(nuByRegion)]() mutable {
+            const uint_t step = loop.getCurrentTimeStep();
+            if (!cadenceDue(step, thermalLogCadence, false))
+                return;
+
+            if (!nuOutputRegions.empty())
+            {
+                std::fill(localFluxArea.begin(), localFluxArea.end(), 0.0);
+                std::fill(localArea.begin(), localArea.end(), 0.0);
+                std::fill(reduceLocal.begin(), reduceLocal.end(), 0.0);
+                std::fill(reduceGlobal.begin(), reduceGlobal.end(), 0.0);
+                const double invDxLocal = invDxLevel0;
+                const double faceAreaLocal = faceAreaLevel0;
+                for (const auto& blockEntry : thermalBCBlocks)
+                {
+                    auto* theta = blockEntry.block->getData<ScalarField>(thetaID);
+                    for (const auto& entry : *blockEntry.entries)
+                    {
+                        if (entry.thermalType != THERMAL_DIRICHLET || entry.bcId != BC_DIRICHLET)
+                            continue;
+                        const auto slotIt = nuRegionSlotById.find(entry.regionId);
+                        if (slotIt == nuRegionSlotById.end())
+                            continue;
+                        const size_t slot = slotIt->second;
+
+                        for (walberla::uint8_t nbrIdx = walberla::uint8_t(0); nbrIdx < entry.fluidNeighborCount; ++nbrIdx)
+                        {
+                            const size_t dirIdx = size_t(entry.fluidNeighborDirIndices[size_t(nbrIdx)]);
+                            const auto& d = kFaceNbrDirs[dirIdx];
+                            const double thetaFluid =
+                                double((*theta)(entry.x + d[0], entry.y + d[1], entry.z + d[2], 0));
+                            const double thetaWall = double(entry.thermalValue);
+                            localFluxArea[slot] += nuFacePrimitive(thetaWall, thetaFluid, invDxLocal) * faceAreaLocal;
+                            localArea[slot] += faceAreaLocal;
+                        }
+                    }
+                }
+
+                for (size_t i = size_t(0); i < nuOutputRegions.size(); ++i)
+                {
+                    reduceLocal[size_t(2) * i + size_t(0)] = localFluxArea[i];
+                    reduceLocal[size_t(2) * i + size_t(1)] = localArea[i];
+                }
+                WALBERLA_MPI_SECTION()
+                {
+                    MPI_Allreduce(
+                        reduceLocal.data(),
+                        reduceGlobal.data(),
+                        int(reduceLocal.size()),
+                        walberla::MPITrait<double>::type(),
+                        walberla::MPITrait<double>::operation(walberla::mpi::SUM),
+                        walberla::mpi::MPIManager::instance()->comm());
+                }
+
+                if (isRoot)
+                {
+                    for (size_t i = size_t(0); i < nuOutputRegions.size(); ++i)
+                    {
+                        const double area = reduceGlobal[size_t(2) * i + size_t(1)];
+                        if (area <= 0.0 && (*warnedNuZeroArea)[i] == walberla::uint8_t(0))
+                        {
+                            (*warnedNuZeroArea)[i] = walberla::uint8_t(1);
+                            WALBERLA_LOG_WARNING(
+                                "Nu requested for region '" << nuOutputRegions[i].regionName
+                                << "' but contributing boundary face area is 0. "
+                                << "Check mesh coloring / BC mapping / thermal boundary cache. "
+                                << "Nu will remain NaN for this region.");
+                        }
+                    }
+                }
+
+                const double dTheta = double(thetaDirichletMax - thetaDirichletMin);
+                if (isRoot && !warnedZeroDeltaTheta && std::abs(dTheta) <= 1e-15)
+                {
+                    WALBERLA_LOG_WARNING("Thermal Nu disabled: thetaDirichletMax == thetaDirichletMin (DeltaTheta=0). Nu will be NaN.");
+                    warnedZeroDeltaTheta = true;
+                }
+                nuByRegion.assign(nuOutputRegions.size(), std::numeric_limits<double>::quiet_NaN());
+                if (std::abs(dTheta) > 1e-15)
+                {
+                    for (size_t i = size_t(0); i < nuOutputRegions.size(); ++i)
+                    {
+                        const double fluxArea = reduceGlobal[size_t(2) * i + size_t(0)];
+                        const double area = reduceGlobal[size_t(2) * i + size_t(1)];
+                        if (area > 0.0)
+                            nuByRegion[i] = (fluxArea / area) * lCharLatFine / dTheta;
+                    }
+                }
+            }
+
+            if (isRoot)
+            {
+                std::ostringstream oss;
+                oss << std::setprecision(9);
+                oss << "THERMAL t=" << step
+                    << " theta_ref=" << double(currentThetaRef);
+                for (size_t i = size_t(0); i < nuOutputRegions.size(); ++i)
+                    oss << " Nu_" << nuOutputLabels[i] << "=" << nuByRegion[i];
+                WALBERLA_LOG_INFO(oss.str());
+            }
+        }, "ThermalLogger");
+    }
+
+    // Checkpoint writer hook.
+    if (checkpointCadence > uint_t(0))
+    {
+        loop.addFuncAfterTimeStep([&]() {
+            const uint_t step = loop.getCurrentTimeStep();
+            if (!cadenceDue(step, checkpointCadence, false))
+                return;
+            writeCheckpointState(step, pdfID, densityID, velocityID, thetaID);
+        }, "CheckpointWriter");
+    }
+
+    // VTK output hooks.
+    if (vtkWriteFrequency > uint_t(0) || vtkWriteAtStepZero)
+    {
+        const bool vtkBinary = true;
+
+        std::unordered_map<walberla::uint16_t, size_t> nuVtkFieldSlotByRegionId;
+        nuVtkFieldSlotByRegionId.reserve(nuVtkFields.size());
+        for (size_t idx = size_t(0); idx < nuVtkFields.size(); ++idx)
+            nuVtkFieldSlotByRegionId.emplace(nuVtkFields[idx].regionId, idx);
+
+        auto updateNuFieldsForVtk = [&, nuVtkFieldSlotByRegionId]() {
+            const double dTheta = double(thetaDirichletMax - thetaDirichletMin);
+            const bool validDTheta = std::abs(dTheta) > 1e-15;
+            const double invDxLocal = invDxLevel0;
+            const double nuScale = validDTheta ? (lCharLatFine / dTheta) : 0.0;
+            const real_t nuValueReset =
+                validDTheta ? real_t(0) : std::numeric_limits<real_t>::quiet_NaN();
+
+            for (auto& block : *blocks)
+            {
+                const auto& boundaryFluidIndices = boundaryFluidIndexList.getVector(block);
+                if (boundaryFluidIndices.empty())
+                    continue;
+                std::vector<ScalarField*> nuValueFields;
+                std::vector<ScalarField*> nuCountFields;
+                nuValueFields.reserve(nuVtkFields.size());
+                nuCountFields.reserve(nuVtkFields.size());
+                for (const auto& nuField : nuVtkFields)
+                {
+                    nuValueFields.push_back(block.getData<ScalarField>(nuField.valueFieldID));
+                    nuCountFields.push_back(block.getData<ScalarField>(nuField.countFieldID));
+                }
+                for (const auto& idx : boundaryFluidIndices)
+                {
+                    const int x = int(idx.x);
+                    const int y = int(idx.y);
+                    const int z = int(idx.z);
+                    for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
+                    {
+                        (*nuValueFields[slot])(x, y, z, 0) = nuValueReset;
+                        (*nuCountFields[slot])(x, y, z, 0) = real_t(0);
+                    }
+                }
+                if (!validDTheta || nuVtkFields.empty())
+                    continue;
+
+                auto* theta = block.getData<ScalarField>(thetaID);
+                auto* cellType = block.getData<CellTypeField>(cellTypeID);
+                auto* bcId = block.getData<BcField>(bcIdID);
+                auto* thermalType = block.getData<ThermalTypeField>(thermalTypeID);
+                auto* thermalValue = block.getData<ScalarField>(thermalValueID);
+                auto* regionId = block.getData<RegionIdField>(regionIdID);
+                for (const auto& idx : boundaryFluidIndices)
+                {
+                    const int x = int(idx.x);
+                    const int y = int(idx.y);
+                    const int z = int(idx.z);
+                    const double thetaFluid = double((*theta)(x, y, z, 0));
+                    for (const auto& d : kFaceNbrDirs)
+                    {
+                        const int sx = x + d[0];
+                        const int sy = y + d[1];
+                        const int sz = z + d[2];
+                        if ((*cellType)(sx, sy, sz, 0) != CELL_SOLID)
+                            continue;
+                        if ((*bcId)(sx, sy, sz, 0) != BC_DIRICHLET)
+                            continue;
+                        if ((*thermalType)(sx, sy, sz, 0) != THERMAL_DIRICHLET)
+                            continue;
+                        const auto slotIt = nuVtkFieldSlotByRegionId.find((*regionId)(sx, sy, sz, 0));
+                        if (slotIt == nuVtkFieldSlotByRegionId.end())
+                            continue;
+                        const size_t slot = slotIt->second;
+                        const double thetaWall = double((*thermalValue)(sx, sy, sz, 0));
+                        (*nuValueFields[slot])(x, y, z, 0) += real_t(nuFacePrimitive(thetaWall, thetaFluid, invDxLocal) * nuScale);
+                        (*nuCountFields[slot])(x, y, z, 0) += real_t(1);
+                    }
+                    for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
+                    {
+                        const real_t count = (*nuCountFields[slot])(x, y, z, 0);
+                        if (count > real_t(0))
+                            (*nuValueFields[slot])(x, y, z, 0) /= count;
+                    }
+                }
+            }
+        };
+
+        WALBERLA_ROOT_SECTION()
+        {
+            ensureDirectory(std::filesystem::path(outputBaseDir) / kVtkDirName, "create vtk output directory");
+        }
+        WALBERLA_MPI_SECTION()
+        {
+            MPI_Barrier(walberla::mpi::MPIManager::instance()->comm());
+        }
+        auto vtkOutput = walberla::vtk::createVTKOutput_BlockData(
+            *blocks,
+            kVtkDirName,
+            uint_t(1),
+            uint_t(0),
+            true,
+            outputBaseDir,
+            "simulation_step",
+            false,
+            vtkBinary,
+            true,
+            false,
+            uint_t(0),
+            false,
+            false);
+        vtkOutput->addCellDataWriter(
+            std::make_shared<walberla::field::VTKWriter<ScalarField, walberla::float32>>(densityID, "density"));
+        vtkOutput->addCellDataWriter(
+            std::make_shared<walberla::field::VTKWriter<VecField, walberla::float32>>(velocityID, "velocity"));
+        vtkOutput->addCellDataWriter(
+            std::make_shared<walberla::field::VTKWriter<ScalarField, walberla::float32>>(thetaID, "theta"));
+        vtkOutput->addCellDataWriter(std::make_shared<walberla::field::VTKWriter<CellTypeField>>(cellTypeID, "cellType"));
+        vtkOutput->addCellDataWriter(std::make_shared<walberla::field::VTKWriter<BcField>>(bcIdID, "bcId"));
+        for (const auto& nuField : nuVtkFields)
+            vtkOutput->addCellDataWriter(
+                std::make_shared<walberla::field::VTKWriter<ScalarField, walberla::float32>>(
+                    nuField.valueFieldID,
+                    "Nu_" + nuOutputLabelFromRegionName(nuField.regionName)));
+        auto vtkStepDue = [&](uint_t step) -> bool {
+            if (vtkWriteAtStepZero && step == uint_t(0))
+                return true;
+            return cadenceDue(step, vtkWriteFrequency, false);
+        };
+        loop.addFuncAfterTimeStep([&, vtkStepDue, updateNuFieldsForVtk]() {
+            const uint_t step = loop.getCurrentTimeStep();
+            if (!vtkStepDue(step))
+                return;
+            updateNuFieldsForVtk();
+        }, "NuFieldForVTK");
+        loop.addFuncAfterTimeStep([&, vtkStepDue, vtkOutput, dtPhysFine]() {
+            const uint_t step = loop.getCurrentTimeStep();
+            if (!vtkStepDue(step))
+                return;
+            // Write VTK artifacts with the physical simulation step as file numbering.
+            vtkOutput->forceWrite(step);
+            WALBERLA_MPI_SECTION()
+            {
+                MPI_Barrier(walberla::mpi::MPIManager::instance()->comm());
+            }
+            WALBERLA_ROOT_SECTION()
+            {
+                appsupport::rescaleVtkTimeMetadata(outputBaseDir, kVtkDirName, dtPhysFine);
+            }
+        }, "VTK");
+    }
+
+    // Emit setup marker then enter main loop.
+    if (isRoot)
+        WALBERLA_LOG_INFO("SETUP");
+
+    loop.run();
+    cleanupCheckpointAuxDirs(checkpointPaths.forestFile.parent_path(), "cleanup checkpoint auxiliary directory at shutdown");
+    return 0;
+}
+
+} // namespace fluidsim
