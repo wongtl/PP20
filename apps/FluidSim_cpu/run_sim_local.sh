@@ -82,7 +82,9 @@ cmake -S "$WALBERLA_ROOT" -B "$BUILD_DIR" \
     -DWALBERLA_ENABLE_SWEEPGEN=ON \
     -DWALBERLA_SWEEPGEN_MANAGED_VENV=OFF \
     -DWALBERLA_BUILD_TESTS=OFF \
+    -DWALBERLA_BUILD_TUTORIALS=OFF \
     -DPython_EXECUTABLE="$CODEGEN_PY" \
+    -DPystencilsSfg_PYTHON_INTERPRETER="$CODEGEN_PY" \
     -DWALBERLA_CODEGEN_PYTHON="$CODEGEN_PY"
 
 cmake --build "$BUILD_DIR" --target FluidSim_cpu --parallel "$BUILD_JOBS" 2>&1 | sed '/^ninja: no work to do\.?$/d'
