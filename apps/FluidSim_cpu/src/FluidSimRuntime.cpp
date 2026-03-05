@@ -112,7 +112,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
     auto& currentThetaRef = *binding.currentThetaRef;
     const real_t thetaDirichletMax = binding.thetaDirichletMax;
     const real_t thetaDirichletMin = binding.thetaDirichletMin;
-    const double lCharLatFine = binding.lCharLatFine;
     const auto nuFacePrimitive = [](double thetaWall, double thetaFluid, double invDxLocal) {
         return (thetaWall - thetaFluid) * (2.0 * invDxLocal);
     };
@@ -577,15 +576,15 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         nuOutputLabels.reserve(nuOutputRegions.size());
         for (const auto& region : nuOutputRegions)
             nuOutputLabels.push_back(nuOutputLabelFromRegionName(region.regionName));
-        bool warnedZeroDeltaTheta = false;
         auto warnedNuZeroArea = std::make_shared<std::vector<walberla::uint8_t>>(nuOutputRegions.size(), walberla::uint8_t(0));
+        auto warnedNuZeroDeltaTheta = std::make_shared<std::vector<walberla::uint8_t>>(nuOutputRegions.size(), walberla::uint8_t(0));
         std::vector<double> reduceLocal(nuOutputRegions.size() * size_t(2), 0.0);
         std::vector<double> reduceGlobal(nuOutputRegions.size() * size_t(2), 0.0);
         std::vector<double> localFluxArea(nuOutputRegions.size(), 0.0);
         std::vector<double> localArea(nuOutputRegions.size(), 0.0);
         std::vector<double> nuByRegion(nuOutputRegions.size(), std::numeric_limits<double>::quiet_NaN());
         loop.addFuncAfterTimeStep(
-            [&, nuRegionSlotById, nuOutputLabels, warnedNuZeroArea, warnedZeroDeltaTheta,
+            [&, nuRegionSlotById, nuOutputLabels, warnedNuZeroArea, warnedNuZeroDeltaTheta,
              reduceLocal = std::move(reduceLocal), reduceGlobal = std::move(reduceGlobal),
              localFluxArea = std::move(localFluxArea), localArea = std::move(localArea),
              nuByRegion = std::move(nuByRegion)]() mutable {
@@ -659,22 +658,30 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                     }
                 }
 
-                const double dTheta = double(thetaDirichletMax - thetaDirichletMin);
-                if (isRoot && !warnedZeroDeltaTheta && std::abs(dTheta) <= 1e-15)
-                {
-                    WALBERLA_LOG_WARNING("Thermal Nu disabled: thetaDirichletMax == thetaDirichletMin (DeltaTheta=0). Nu will be NaN.");
-                    warnedZeroDeltaTheta = true;
-                }
+                const double globalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
                 nuByRegion.assign(nuOutputRegions.size(), std::numeric_limits<double>::quiet_NaN());
-                if (std::abs(dTheta) > 1e-15)
+                for (size_t i = size_t(0); i < nuOutputRegions.size(); ++i)
                 {
-                    for (size_t i = size_t(0); i < nuOutputRegions.size(); ++i)
+                    const double dTheta = nuOutputRegions[i].hasDeltaThetaOverride
+                                            ? nuOutputRegions[i].deltaThetaOverride
+                                            : globalDeltaTheta;
+                    if (std::abs(dTheta) <= 1e-15)
                     {
-                        const double fluxArea = reduceGlobal[size_t(2) * i + size_t(0)];
-                        const double area = reduceGlobal[size_t(2) * i + size_t(1)];
-                        if (area > 0.0)
-                            nuByRegion[i] = (fluxArea / area) * lCharLatFine / dTheta;
+                        if (isRoot && (*warnedNuZeroDeltaTheta)[i] == walberla::uint8_t(0))
+                        {
+                            (*warnedNuZeroDeltaTheta)[i] = walberla::uint8_t(1);
+                            WALBERLA_LOG_WARNING(
+                                "Thermal Nu disabled for region '" << nuOutputRegions[i].regionName
+                                << "': DeltaTheta is zero (source="
+                                << (nuOutputRegions[i].hasDeltaThetaOverride ? "Nu_dT" : "global_dirichlet_span")
+                                << "). Nu will be NaN for this region.");
+                        }
+                        continue;
                     }
+                    const double fluxArea = reduceGlobal[size_t(2) * i + size_t(0)];
+                    const double area = reduceGlobal[size_t(2) * i + size_t(1)];
+                    if (area > 0.0)
+                        nuByRegion[i] = (fluxArea / area) * nuOutputRegions[i].lCharLatFine / dTheta;
                 }
             }
 
@@ -711,14 +718,30 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         nuVtkFieldSlotByRegionId.reserve(nuVtkFields.size());
         for (size_t idx = size_t(0); idx < nuVtkFields.size(); ++idx)
             nuVtkFieldSlotByRegionId.emplace(nuVtkFields[idx].regionId, idx);
+        std::unordered_map<walberla::uint16_t, size_t> nuOutputSlotByRegionId;
+        nuOutputSlotByRegionId.reserve(nuOutputRegions.size());
+        for (size_t idx = size_t(0); idx < nuOutputRegions.size(); ++idx)
+            nuOutputSlotByRegionId.emplace(nuOutputRegions[idx].regionId, idx);
 
-        auto updateNuFieldsForVtk = [&, nuVtkFieldSlotByRegionId]() {
-            const double dTheta = double(thetaDirichletMax - thetaDirichletMin);
-            const bool validDTheta = std::abs(dTheta) > 1e-15;
+        auto updateNuFieldsForVtk = [&, nuVtkFieldSlotByRegionId, nuOutputSlotByRegionId]() {
+            const double globalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
             const double invDxLocal = invDxLevel0;
-            const double nuScale = validDTheta ? (lCharLatFine / dTheta) : 0.0;
-            const real_t nuValueReset =
-                validDTheta ? real_t(0) : std::numeric_limits<real_t>::quiet_NaN();
+            std::vector<double> nuScaleBySlot(nuVtkFields.size(), std::numeric_limits<double>::quiet_NaN());
+            std::vector<real_t> nuValueResetBySlot(nuVtkFields.size(), std::numeric_limits<real_t>::quiet_NaN());
+            bool anyValidNuScale = false;
+            for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
+            {
+                const auto infoIt = nuOutputSlotByRegionId.find(nuVtkFields[slot].regionId);
+                if (infoIt == nuOutputSlotByRegionId.end())
+                    continue;
+                const auto& nuInfo = nuOutputRegions[infoIt->second];
+                const double dTheta = nuInfo.hasDeltaThetaOverride ? nuInfo.deltaThetaOverride : globalDeltaTheta;
+                if (std::abs(dTheta) <= 1e-15)
+                    continue;
+                nuScaleBySlot[slot] = nuInfo.lCharLatFine / dTheta;
+                nuValueResetBySlot[slot] = real_t(0);
+                anyValidNuScale = true;
+            }
 
             for (auto& block : *blocks)
             {
@@ -741,11 +764,11 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                     const int z = int(idx.z);
                     for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
                     {
-                        (*nuValueFields[slot])(x, y, z, 0) = nuValueReset;
+                        (*nuValueFields[slot])(x, y, z, 0) = nuValueResetBySlot[slot];
                         (*nuCountFields[slot])(x, y, z, 0) = real_t(0);
                     }
                 }
-                if (!validDTheta || nuVtkFields.empty())
+                if (!anyValidNuScale || nuVtkFields.empty())
                     continue;
 
                 auto* theta = block.getData<ScalarField>(thetaID);
@@ -775,8 +798,11 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                         if (slotIt == nuVtkFieldSlotByRegionId.end())
                             continue;
                         const size_t slot = slotIt->second;
+                        if (!std::isfinite(nuScaleBySlot[slot]))
+                            continue;
                         const double thetaWall = double((*thermalValue)(sx, sy, sz, 0));
-                        (*nuValueFields[slot])(x, y, z, 0) += real_t(nuFacePrimitive(thetaWall, thetaFluid, invDxLocal) * nuScale);
+                        (*nuValueFields[slot])(x, y, z, 0) +=
+                            real_t(nuFacePrimitive(thetaWall, thetaFluid, invDxLocal) * nuScaleBySlot[slot]);
                         (*nuCountFields[slot])(x, y, z, 0) += real_t(1);
                     }
                     for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)

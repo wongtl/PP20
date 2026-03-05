@@ -1,7 +1,7 @@
 MeshGeometry
 {
     // Load restart from apps/storage/<case_name>/checkpoint/fluidsim_state_*
-    checkpointFolder "7248243";
+    // checkpointFolder "7248243";
 
     // Roles: 1 FLUID_CONTAINER, N SOLID_OBSTACLE
     // Region placement: each region is centered to the interior domain first,
@@ -9,22 +9,22 @@ MeshGeometry
     Region
     {
         name "container";
-        meshFile "geometry/cube_rbc.PLY";
+        meshFile "geometry/OnlyBox_of_SuspendedPlate_yellowbottom_purpletop_bluerest.PLY";
         role "FLUID_CONTAINER";
         // Mesh file is in mm; convert to meters.
         scale 0.001;
         translate < 0, 0, 0 >;
     }
 
-    // Region
-    // {
-    //     name "obstacle";
-    //     meshFile "geometry/SuspendedPlateONLY_redinnertop_greeninnerrest.PLY";
-    //     role "SOLID_OBSTACLE";
-    //      // Mesh file is in mm; convert to meters.
-    //     scale 0.001;
-    //     translate < 0, -0.2, 0 >;
-    // }
+    Region
+    {
+        name "obstacle";
+        meshFile "geometry/SuspendedPlateONLY_redinnertop_greeninnerrest.PLY";
+        role "SOLID_OBSTACLE";
+         // Mesh file is in mm; convert to meters.
+        scale 0.001;
+        translate < 0, -0.2, 0 >;
+    }
 
     // Required free margin (in fine cells) between mesh and each domain boundary (x,y,z).
     paddingCells < 1, 1, 1 >;
@@ -38,19 +38,19 @@ Physical
     // k_phys     0.1207;         // W/(m*K)
     // beta       2.322e-3;       // 1/K
 
-    // Active setup with target Pr = 0.71 and Ra tuned via Ra_factor.
-    nu_phys    1.568e-5;             // m^2/s
-    alpha_phys 2.208450704225352e-5; // m^2/s  (nu_phys / alpha_phys = 0.71)
-    k_phys     0.0262;               // W/(m*K)
-    beta       3.4e-3;               // 1/K
+    // Active setup with LXe properties and Ra tuned via Ra_factor.
+    nu_phys    1.5946476e-7;   // m^2/s
+    alpha_phys 1.5946476e-7;   // m^2/s
+    k_phys     0.1207;         // W/(m*K)
+    beta       2.322e-3;       // 1/K
     
     // Physical domain size (meters).
-    domain_size   < 1, 1, 1 >; // interior physical size (excluding computational padding)
-    L_char        1;           // characteristic length basis for Ra
+    domain_size   < 0.1, 0.3, 0.1 >; // interior physical size (excluding computational padding)
+    fluid_height  0.3;         // characteristic fluid height used in Ra/buoyancy scaling
     deltaT_K      0.1;
     g             9.81;        // m/s^2
     // manual scale factor applied to Ra and buoyancy forcing
-    Ra_factor 3.322276864400409e-4;
+    Ra_factor 98.00554995375751;
 }
 
 Resolution
@@ -59,9 +59,9 @@ Resolution
     // Total lattice cells are derived as: interiorFineCells + 2 * MeshGeometry.paddingCells.
     // Physical.full_size is derived from domain_size and total lattice cells.
     // Total lattice cells must match Physical.full_size aspect ratio and be divisible by cellsPerBlock.
-    interiorFineCells < 200, 200, 200 >;
+    interiorFineCells < 200, 600, 200 >;
     // Cells per block in x/y/z.
-    cellsPerBlock < 202, 202, 202 >;
+    cellsPerBlock < 202, 602, 202 >;
     // Number of blocks should be divisible by ntasks for proper performance.
 }
 
@@ -75,6 +75,19 @@ DomainSetup
 {
     // Periodicity only. rootBlocks are derived from totalFineCells and cellsPerBlock.
     periodic < 0, 0, 0 >;
+}
+
+DualGrid
+{
+    // When enabled, the interior cuboid runs at coarse resolution (coarseRatio:1)
+    // while the boundary shell keeps fine resolution. Reduces active cell count.
+    // coarseMin/coarseMax are in fine-cell coordinates (inclusive/exclusive).
+    // Shell thickness must be >= 2 fine cells on each side.
+    // Coarse extent per axis must be divisible by coarseRatio.
+    enabled 0;
+    coarseMin < 10, 10, 10 >;
+    coarseMax < 92, 92, 92 >;
+    coarseRatio 2;
 }
 
 Parameters
@@ -105,7 +118,9 @@ ColorBC
     //
     // DIRICHLET* regions use:
     //   theta   <value>
+    //   L_char  <value>        // required characteristic length for this region's Nu scaling
     //   Nu      <true|false>   // enable Nu logging as Nu_<NormalizedName>
+    //   Nu_dT   <value>        // optional positive DeltaTheta override for this region
     //                          // e.g. DIRICHLET1 -> Nu_1, DIRICHLET2 -> Nu_2
     //
     // ADIABATIC* regions use:
@@ -133,14 +148,16 @@ ColorBC
         name "DIRICHLET1";
         rgb < 255, 0, 0 >;
         theta 1.0;
+        L_char 0.3;
         Nu true;
     }
 
     Region
     {
         name "DIRICHLET2";
-        rgb < 0, 0, 255 >;
+        rgb < 0, 255, 255 >;
         theta 0.0;
+        L_char 0.3;
         Nu true;
     }
 
@@ -158,23 +175,33 @@ ColorBC
     //     heatload_watts 0.0;
     // }
 
-    // Region
-    // {
-    //     name "INLET1";
-    //     rgb < 255, 255, 0 >;
-    //     thermal "Dirichlet";
-    //     velocity < 0.0, 0.0, -0.1 >;
-    //     rho 1.0;
-    //     theta 0.0;
-    // }
-    
-    // Region
-    // {
-    //     name "OUTLET1";
-    //     rgb < 255, 0, 255 >;
-    //     thermal "Adiabatic";
-    //     velocity < 0.0, 0.0, -0.1 >;
-    //     rho 1.0;
-    //     theta 0.0;
-    // }
+    Region
+    {
+        name "PRESSURE1";
+        rgb < 0, 0, 255 >;
+        flow "both";
+        rho 1.0;
+        thermal "Dirichlet";
+        theta 0.0;
+    }
+
+    Region
+    {
+        name "PRESSURE2";
+        rgb < 255, 255, 0 >;
+        flow "in";
+        rho 1.0;
+        thermal "Dirichlet";
+        theta 0.0;
+    }
+
+    Region
+    {
+        name "PRESSURE3";
+        rgb < 255, 0, 255 >;
+        flow "out";
+        rho 1.0;
+        thermal "Dirichlet";
+        theta 0.0;
+    }
 }

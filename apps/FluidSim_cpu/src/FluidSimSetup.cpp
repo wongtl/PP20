@@ -149,7 +149,11 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     const double g = physicalParams.getParameter<double>("g");
     const walberla::Vector3<double> domainSizePhys = physicalParams.getParameter<walberla::Vector3<double>>(
         "domain_size", walberla::Vector3<double>(0.0, 0.0, 0.0));
-    const double lCharInput = physicalParams.getParameter<double>("L_char", 0.012);
+    if (physicalParams.isDefined("L_char"))
+    {
+        WALBERLA_ABORT("Physical.L_char is not supported. Use Physical.fluid_height instead.");
+    }
+    const double fluidHeightInput = physicalParams.getParameter<double>("fluid_height");
     const double deltaTK = physicalParams.getParameter<double>("deltaT_K", 1.0);
     const double raFactor = physicalParams.getParameter<double>("Ra_factor", 1.0);
     const double nuLatTargetFine = numericsParams.getParameter<double>("nu_lat_target", 0.01);
@@ -186,7 +190,7 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         WALBERLA_ABORT("Physical.g must be finite.");
     if (nuLatTargetFine <= 0.0)
         WALBERLA_ABORT("Numerics.nu_lat_target must be > 0.");
-    if (lCharInput <= 0.0) WALBERLA_ABORT("Physical.L_char must be > 0.");
+    if (fluidHeightInput <= 0.0) WALBERLA_ABORT("Physical.fluid_height must be > 0.");
     if (raFactor < 0.0) WALBERLA_ABORT("Physical.Ra_factor must be >= 0.");
 
     const auto fineDomainCells = walberla::Vector3<uint_t>(
@@ -224,16 +228,16 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     }
 
     const double dxPhysFine = dxX;
-    const double lCharPhys = lCharInput;
-    const double lCharLatFine = lCharPhys / dxPhysFine;
-    if (lCharLatFine <= 0.0)
-        WALBERLA_ABORT("Computed non-positive characteristic length in lattice units.");
+    const double fluidHeightPhys = fluidHeightInput;
+    const double fluidHeightLatFine = fluidHeightPhys / dxPhysFine;
+    if (fluidHeightLatFine <= 0.0)
+        WALBERLA_ABORT("Computed non-positive fluid height in lattice units.");
     const double dtPhysFine = nuLatTargetFine * dxPhysFine * dxPhysFine / nuPhys;
     double ra = 0.0;
     double pr = 0.0;
     double alphaLatFine = 0.0;
     double aLatFine = 0.0;
-    const double raBase = g * beta * deltaTK * (lCharPhys * lCharPhys * lCharPhys) / (nuPhys * alphaPhys);
+    const double raBase = g * beta * deltaTK * (fluidHeightPhys * fluidHeightPhys * fluidHeightPhys) / (nuPhys * alphaPhys);
     ra = raBase * raFactor;
     alphaLatFine = alphaPhys * dtPhysFine / (dxPhysFine * dxPhysFine);
     if (alphaLatFine <= 0.0)
@@ -976,6 +980,7 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                          << " Pr=" << pr
                          << " dx_phys=" << dxPhysFine
                          << " dt_phys=" << dtPhysStep
+                         << " fluid_height=" << fluidHeightPhys
                          << " dT=" << deltaTK
                          << " nu_target_lat=" << nuLatTargetFine
                          << " initPerturb=" << cmd.initPerturb
@@ -1122,8 +1127,11 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                a.thermalType == b.thermalType &&
                a.pressureFlowMode == b.pressureFlowMode &&
                a.nuOutput == b.nuOutput &&
+               a.hasNuDeltaThetaOverride == b.hasNuDeltaThetaOverride &&
                a.r == b.r && a.g == b.g && a.b == b.b &&
                nearlyEqualColorValue(a.theta, b.theta) &&
+               nearlyEqualColorValue(a.nuLCharPhys, b.nuLCharPhys) &&
+               nearlyEqualColorValue(a.nuDeltaThetaOverride, b.nuDeltaThetaOverride) &&
                nearlyEqualColorValue(a.heatload, b.heatload) &&
                nearlyEqualColorValue(a.flowRho, b.flowRho) &&
                nearlyEqualColorValue(a.flowTheta, b.flowTheta) &&
@@ -1190,6 +1198,22 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                 region.thermalType = THERMAL_DIRICHLET;
                 region.theta = rb.getParameter<real_t>("theta");
                 region.nuOutput = rb.getParameter<bool>("Nu", false);
+                region.nuLCharPhys = rb.getParameter<real_t>("L_char");
+                if (region.nuLCharPhys <= real_t(0))
+                {
+                    WALBERLA_ABORT("ColorBC.Region '" << region.uidName
+                                   << "' requires L_char > 0 for DIRICHLET regions.");
+                }
+                if (rb.isDefined("Nu_dT"))
+                {
+                    region.hasNuDeltaThetaOverride = true;
+                    region.nuDeltaThetaOverride = rb.getParameter<real_t>("Nu_dT");
+                    if (region.nuDeltaThetaOverride <= real_t(0))
+                    {
+                        WALBERLA_ABORT("ColorBC.Region '" << region.uidName
+                                       << "' requires Nu_dT > 0 when provided.");
+                    }
+                }
             }
             else if (region.bcId == BC_ADIABATIC)
             {
@@ -1277,8 +1301,17 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         thetaInit = thetaDirichletMin;
     else if (isRoot)
         WALBERLA_LOG_WARNING("ColorBC has no DIRICHLET* region. Using thetaInit=0 and Nu_* outputs will be undefined.");
-    if (hasDirichlet && std::abs(double(thetaDirichletMax - thetaDirichletMin)) <= 1e-15 && isRoot)
-        WALBERLA_LOG_WARNING("DIRICHLET* regions share identical theta values; Nu_* denominator is zero.");
+    bool hasNuUsingGlobalDeltaTheta = false;
+    for (const auto& region : colorRegions)
+    {
+        if (region.bcId == BC_DIRICHLET && region.nuOutput && !region.hasNuDeltaThetaOverride)
+        {
+            hasNuUsingGlobalDeltaTheta = true;
+            break;
+        }
+    }
+    if (hasDirichlet && hasNuUsingGlobalDeltaTheta && std::abs(double(thetaDirichletMax - thetaDirichletMin)) <= 1e-15 && isRoot)
+        WALBERLA_LOG_WARNING("DIRICHLET* regions share identical theta values; Nu_* denominator is zero for regions using global DeltaTheta.");
 
     walberla::mesh::ColorToBoundaryMapper<walberla::mesh::TriangleMesh> colorMapper{
         walberla::mesh::BoundaryInfo(walberla::BoundaryUID(kUnmappedBoundaryUid))};
@@ -2674,7 +2707,33 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     {
         if (region.bcId != BC_DIRICHLET || !region.nuOutput)
             continue;
-        nuOutputRegions.push_back(NuRegionOutputInfo{region.regionIndex, region.uidName});
+        const double nuLCharLatFine = double(region.nuLCharPhys) / dxPhysFine;
+        if (!std::isfinite(nuLCharLatFine) || nuLCharLatFine <= 0.0)
+        {
+            WALBERLA_ABORT("ColorBC.Region '" << region.uidName
+                           << "' produced non-finite/invalid Nu L_char in lattice units.");
+        }
+        NuRegionOutputInfo info;
+        info.regionId = region.regionIndex;
+        info.regionName = region.uidName;
+        info.lCharLatFine = nuLCharLatFine;
+        info.hasDeltaThetaOverride = region.hasNuDeltaThetaOverride;
+        info.deltaThetaOverride = double(region.nuDeltaThetaOverride);
+        nuOutputRegions.push_back(std::move(info));
+    }
+    if (isRoot)
+    {
+        const double globalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
+        for (const auto& region : nuOutputRegions)
+        {
+            const bool useOverride = region.hasDeltaThetaOverride;
+            const double dTheta = useOverride ? region.deltaThetaOverride : globalDeltaTheta;
+            WALBERLA_LOG_INFO("NU_REGION name=" << region.regionName
+                             << " L_char_phys=" << (region.lCharLatFine * dxPhysFine)
+                             << " L_char_lat=" << region.lCharLatFine
+                             << " dT_source=" << (useOverride ? "Nu_dT" : "global_dirichlet_span")
+                             << " dT=" << dTheta);
+        }
     }
     std::vector<NuVtkFieldInfo> nuVtkFields;
     if (vtkWriteFrequency > uint_t(0))
@@ -2741,7 +2800,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     binding.currentThetaRef = &currentThetaRef;
     binding.thetaDirichletMax = thetaDirichletMax;
     binding.thetaDirichletMin = thetaDirichletMin;
-    binding.lCharLatFine = lCharLatFine;
 
     binding.checkpointPaths = checkpointPaths;
     binding.checkpointRegions = std::move(checkpointRegions);

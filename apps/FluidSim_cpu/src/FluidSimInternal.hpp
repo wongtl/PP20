@@ -121,6 +121,9 @@ struct ColorRegionConfig
     walberla::uint8_t thermalType = THERMAL_ADIABATIC;
     bool nuOutput = false;
     real_t theta = real_t(0);
+    real_t nuLCharPhys = real_t(0);
+    bool hasNuDeltaThetaOverride = false;
+    real_t nuDeltaThetaOverride = real_t(0);
     real_t heatload = real_t(0);
     real_t flowRho = real_t(1);
     real_t flowTheta = real_t(0);

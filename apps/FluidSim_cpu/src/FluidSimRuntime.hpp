@@ -29,6 +29,9 @@ struct NuRegionOutputInfo
 {
     walberla::uint16_t regionId = walberla::uint16_t(0);
     std::string regionName;
+    double lCharLatFine = 0.0;
+    bool hasDeltaThetaOverride = false;
+    double deltaThetaOverride = 0.0;
 };
 
 struct NuVtkFieldInfo
@@ -107,7 +110,6 @@ struct FluidSimRuntimeBindings
     real_t* currentThetaRef = nullptr;
     real_t thetaDirichletMax = real_t(0);
     real_t thetaDirichletMin = real_t(0);
-    double lCharLatFine = 0.0;
 
     // Output/checkpoint descriptors.
     CheckpointPaths checkpointPaths;
