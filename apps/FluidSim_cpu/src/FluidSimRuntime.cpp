@@ -836,7 +836,7 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                 return;
             updateNuFieldsForVtk();
         }, "NuFieldForVTK");
-        loop.addFuncAfterTimeStep([&, vtkStepDue, vtkOutput, dtPhysFine]() {
+        loop.addFuncAfterTimeStep([&, vtkStepDue, vtkOutput]() {
             const uint_t step = loop.getCurrentTimeStep();
             if (!vtkStepDue(step))
                 return;
@@ -846,10 +846,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
             {
                 MPI_Barrier(walberla::mpi::MPIManager::instance()->comm());
             }
-            WALBERLA_ROOT_SECTION()
-            {
-                appsupport::rescaleVtkTimeMetadata(outputBaseDir, kVtkDirName, dtPhysFine);
-            }
         }, "VTK");
     }
 
@@ -858,6 +854,15 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         WALBERLA_LOG_INFO("SETUP");
 
     loop.run();
+
+    // Rescale VTK time metadata AFTER the loop finishes. waLBerla's PVD writer
+    // caches a byte offset (pvdEnd_) for seek-based appending; rewriting the
+    // file mid-run can invalidate that offset and corrupt later appends.
+    WALBERLA_ROOT_SECTION()
+    {
+        appsupport::rescaleVtkTimeMetadata(outputBaseDir, kVtkDirName, dtPhysFine);
+    }
+
     cleanupCheckpointAuxDirs(checkpointPaths.forestFile.parent_path(), "cleanup checkpoint auxiliary directory at shutdown");
     return 0;
 }
