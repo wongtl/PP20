@@ -2625,8 +2625,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     const real_t nuLevel = real_t(nuLatTargetFine);
     const real_t alphaLevel = real_t(alphaLatFine);
     const real_t aLatLevel = real_t(aLatFine);
-    const real_t heatloadScale = real_t(1);
-    const double thetaRefCellVolume = 1.0;
 
     std::shared_ptr<mphys::hotplate::gen::OpenBoundaryReconstructInletSerial> openBoundaryInletSweepSerial;
     std::shared_ptr<mphys::hotplate::gen::OpenBoundaryReconstructOutletSerial> openBoundaryOutletSweepSerial;
@@ -2697,7 +2695,7 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     auto streamCollideSparseSweepSerial = std::make_shared<mphys::hotplate::gen::LBM::StreamCollideSerial>(
         pdfSimID, fluidCellIndexList, densitySimID, thetaSimID, velocitySimID, aLatLevel, nuLevel, double(initialThetaRefForForce));
     auto thermalBcDenseSweepSerial = std::make_shared<mphys::hotplate::gen::ApplyThermalBoundaryDenseSerial>(
-        cellTypeSimID, thermalTypeSimID, thermalValueSimID, thetaTmpSimID, double(heatloadScale));
+        cellTypeSimID, thermalTypeSimID, thermalValueSimID, thetaTmpSimID, 1.0);
     mphys::hotplate::gen::ThetaUpdateDenseSerial thetaDenseSweepSerial(thetaSimID, thetaTmpSimID, velocitySimID, alphaLevel);
     mphys::hotplate::gen::ThetaUpdateSerial thetaSparseSweepSerial(fluidCellIndexList, thetaSimID, thetaTmpSimID, velocitySimID, alphaLevel);
 #ifdef FLUIDSIM_GPU_BUILD
@@ -2752,7 +2750,7 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
             mixedBlocks,
             fluidCellIndexList,
             thetaSimID,
-            thetaRefCellVolume,
+            1.0,
             thetaSumLocal,
             volumeLocal);
         double thetaReduceLocal[2] = {thetaSumLocal, volumeLocal};

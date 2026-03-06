@@ -179,11 +179,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         return (step % cadence) == uint_t(0);
     };
 
-    const double invDxLevel0 = 1.0;
-    const double faceAreaLevel0 = 1.0;
-    const double cellVolumeLevel0 = 1.0;
-    const double substepsPerCoarseStepLevel0 = 1.0;
-
     // Core single-level timestep order.
     auto runStreamLevel = [&]() {
         for (auto* block : fullFluidBlocks)
@@ -452,20 +447,18 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         double updatesPerCoarseStepLocal = 0.0;
         double fluidVolumeLocal = 0.0;
         {
-            const double substepsPerCoarseStep = substepsPerCoarseStepLevel0;
-            const double cellVolumeLocal = cellVolumeLevel0;
             for (auto* block : fullFluidBlocks)
             {
                 const auto bb = blocks->getBlockCellBB(*block);
                 const double fluidCellCount = double(bb.numCells());
-                updatesPerCoarseStepLocal += fluidCellCount * substepsPerCoarseStep;
-                fluidVolumeLocal += fluidCellCount * cellVolumeLocal;
+                updatesPerCoarseStepLocal += fluidCellCount;
+                fluidVolumeLocal += fluidCellCount;
             }
             for (auto* block : mixedBlocks)
             {
                 const double fluidCellCount = double(fluidCellIndexList.getVector(*block).size());
-                updatesPerCoarseStepLocal += fluidCellCount * substepsPerCoarseStep;
-                fluidVolumeLocal += fluidCellCount * cellVolumeLocal;
+                updatesPerCoarseStepLocal += fluidCellCount;
+                fluidVolumeLocal += fluidCellCount;
             }
         }
 
@@ -495,7 +488,7 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                 velocityRuntimeID,
                 thetaRuntimeID,
                 densityRuntimeID,
-                cellVolumeLevel0,
+                1.0,
                 uMaxSqLocal,
                 uySqVolumeLocal,
                 uSqVolumeLocal,
@@ -608,8 +601,8 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                     thermalBCBlocks,
                     thetaRuntimeID,
                     nuRegionSlotById,
-                    invDxLevel0,
-                    faceAreaLevel0,
+                    1.0,
+                    1.0,
                     *nuGpuCache,
                     localFluxArea,
                     localArea);
@@ -732,7 +725,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
             };
 
             const double globalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
-            const double invDxLocal = invDxLevel0;
             std::vector<double> nuScaleBySlot(nuVtkFields.size(), std::numeric_limits<double>::quiet_NaN());
             std::vector<real_t> nuValueResetBySlot(nuVtkFields.size(), std::numeric_limits<real_t>::quiet_NaN());
             bool anyValidNuScale = false;
@@ -796,7 +788,7 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                             continue;
                         const double thetaWall = double((*thermalValue)(sx, sy, sz, 0));
                         (*nuValueFieldPtrs[slot])(x, y, z, 0) +=
-                            real_t(nuFacePrimitive(thetaWall, thetaFluid, invDxLocal) * nuScaleBySlot[slot]);
+                            real_t(nuFacePrimitive(thetaWall, thetaFluid, 1.0) * nuScaleBySlot[slot]);
                         (*nuCountFieldPtrs[slot])(x, y, z, 0) += real_t(1);
                     }
 

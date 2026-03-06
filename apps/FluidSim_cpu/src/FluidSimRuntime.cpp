@@ -167,11 +167,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
     using ThermalTypeField = walberla::field::GhostLayerField<walberla::uint8_t, 1>;
     using RegionIdField = walberla::field::GhostLayerField<walberla::uint16_t, 1>;
 
-    const double invDxLevel0 = 1.0;
-    const double faceAreaLevel0 = 1.0;
-    const double cellVolumeLevel0 = 1.0;
-    const double substepsPerCoarseStepLevel0 = 1.0;
-
     // Core single-level timestep order.
     auto runStreamLevel = [&]() {
 #ifdef _OPENMP
@@ -408,20 +403,18 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         double updatesPerCoarseStepLocal = 0.0;
         double fluidVolumeLocal = 0.0;
         {
-            const double substepsPerCoarseStep = substepsPerCoarseStepLevel0;
-            const double cellVolumeLocal = cellVolumeLevel0;
             for (auto* block : fullFluidBlocks)
             {
                 const auto bb = blocks->getBlockCellBB(*block);
                 const double fluidCellCount = double(bb.numCells());
-                updatesPerCoarseStepLocal += fluidCellCount * substepsPerCoarseStep;
-                fluidVolumeLocal += fluidCellCount * cellVolumeLocal;
+                updatesPerCoarseStepLocal += fluidCellCount;
+                fluidVolumeLocal += fluidCellCount;
             }
             for (auto* block : mixedBlocks)
             {
                 const double fluidCellCount = double(fluidCellIndexList.getVector(*block).size());
-                updatesPerCoarseStepLocal += fluidCellCount * substepsPerCoarseStep;
-                fluidVolumeLocal += fluidCellCount * cellVolumeLocal;
+                updatesPerCoarseStepLocal += fluidCellCount;
+                fluidVolumeLocal += fluidCellCount;
             }
         }
 
@@ -444,7 +437,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
             double uSqVolumeLocal = 0.0;
             double energyLocal = 0.0;
             double massLocal = 0.0;
-            const double cellVolumeLocalStep = cellVolumeLevel0;
             for (auto* block : fullFluidBlocks)
             {
                 auto* u = block->getData<VecField>(velocityID);
@@ -461,10 +453,10 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                     const double uz = (*u)(x, y, z, 2);
                     const double uSq = ux * ux + uy * uy + uz * uz;
                     uMaxSqLocal = std::max(uMaxSqLocal, uSq);
-                    uySqVolumeLocal += (uy * uy) * cellVolumeLocalStep;
-                    uSqVolumeLocal += uSq * cellVolumeLocalStep;
-                    energyLocal += double((*theta)(x, y, z, 0)) * cellVolumeLocalStep;
-                    massLocal += double((*rho)(x, y, z, 0)) * cellVolumeLocalStep;
+                    uySqVolumeLocal += (uy * uy);
+                    uSqVolumeLocal += uSq;
+                    energyLocal += double((*theta)(x, y, z, 0));
+                    massLocal += double((*rho)(x, y, z, 0));
                 }
             }
             for (auto* block : mixedBlocks)
@@ -483,10 +475,10 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                     const double uz = (*u)(x, y, z, 2);
                     const double uSq = ux * ux + uy * uy + uz * uz;
                     uMaxSqLocal = std::max(uMaxSqLocal, uSq);
-                    uySqVolumeLocal += (uy * uy) * cellVolumeLocalStep;
-                    uSqVolumeLocal += uSq * cellVolumeLocalStep;
-                    energyLocal += double((*theta)(x, y, z, 0)) * cellVolumeLocalStep;
-                    massLocal += double((*rho)(x, y, z, 0)) * cellVolumeLocalStep;
+                    uySqVolumeLocal += (uy * uy);
+                    uSqVolumeLocal += uSq;
+                    energyLocal += double((*theta)(x, y, z, 0));
+                    massLocal += double((*rho)(x, y, z, 0));
                 }
             }
 
@@ -586,8 +578,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                 std::fill(localArea.begin(), localArea.end(), 0.0);
                 std::fill(reduceLocal.begin(), reduceLocal.end(), 0.0);
                 std::fill(reduceGlobal.begin(), reduceGlobal.end(), 0.0);
-                const double invDxLocal = invDxLevel0;
-                const double faceAreaLocal = faceAreaLevel0;
                 for (const auto& blockEntry : thermalBCBlocks)
                 {
                     auto* theta = blockEntry.block->getData<ScalarField>(thetaID);
@@ -607,8 +597,8 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                             const double thetaFluid =
                                 double((*theta)(entry.x + d[0], entry.y + d[1], entry.z + d[2], 0));
                             const double thetaWall = double(entry.thermalValue);
-                            localFluxArea[slot] += nuFacePrimitive(thetaWall, thetaFluid, invDxLocal) * faceAreaLocal;
-                            localArea[slot] += faceAreaLocal;
+                            localFluxArea[slot] += nuFacePrimitive(thetaWall, thetaFluid, 1.0);
+                            localArea[slot] += 1.0;
                         }
                     }
                 }
@@ -713,7 +703,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
 
         auto updateNuFieldsForVtk = [&, nuVtkFieldSlotByRegionId, nuOutputSlotByRegionId]() {
             const double globalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
-            const double invDxLocal = invDxLevel0;
             std::vector<double> nuScaleBySlot(nuVtkFields.size(), std::numeric_limits<double>::quiet_NaN());
             std::vector<real_t> nuValueResetBySlot(nuVtkFields.size(), std::numeric_limits<real_t>::quiet_NaN());
             bool anyValidNuScale = false;
@@ -790,7 +779,7 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                             continue;
                         const double thetaWall = double((*thermalValue)(sx, sy, sz, 0));
                         (*nuValueFields[slot])(x, y, z, 0) +=
-                            real_t(nuFacePrimitive(thetaWall, thetaFluid, invDxLocal) * nuScaleBySlot[slot]);
+                            real_t(nuFacePrimitive(thetaWall, thetaFluid, 1.0) * nuScaleBySlot[slot]);
                         (*nuCountFields[slot])(x, y, z, 0) += real_t(1);
                     }
                     for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)

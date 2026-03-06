@@ -2298,8 +2298,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     const real_t nuLevel = real_t(nuLatTargetFine);
     const real_t alphaLevel = real_t(alphaLatFine);
     const real_t aLatLevel = real_t(aLatFine);
-    const real_t heatloadScale = real_t(1);
-    const double thetaRefCellVolume = 1.0;
 
     for (uint_t threadIdx = uint_t(0); threadIdx < sweepThreadCount; ++threadIdx)
     {
@@ -2370,8 +2368,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
             double thetaSumBlock = 0.0;
             for (auto cell = ci.begin(); cell != ci.end(); ++cell)
                 thetaSumBlock += double((*theta)(cell->x(), cell->y(), cell->z(), 0));
-            thetaSumLocal += thetaSumBlock * thetaRefCellVolume;
-            volumeLocal += thetaRefCellVolume * double(ci.numCells());
+            thetaSumLocal += thetaSumBlock;
+            volumeLocal += double(ci.numCells());
         }
 
         for (auto* block : mixedBlocks)
@@ -2386,8 +2384,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                 const int z = int(idx.z);
                 thetaSumBlock += double((*theta)(x, y, z, 0));
             }
-            thetaSumLocal += thetaSumBlock * thetaRefCellVolume;
-            volumeLocal += thetaRefCellVolume * double(fluidIndices.size());
+            thetaSumLocal += thetaSumBlock;
+            volumeLocal += double(fluidIndices.size());
         }
         double thetaReduceLocal[2] = {thetaSumLocal, volumeLocal};
         double thetaReduceGlobal[2] = {0.0, 0.0};
@@ -2575,7 +2573,7 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
             else if (entry.thermalType == THERMAL_ADIABATIC)
                 thetaNext = thetaAvg;
             else if (entry.thermalType == THERMAL_HEATLOAD)
-                thetaNext = thetaAvg + double(entry.thermalValue) * double(heatloadScale);
+                thetaNext = thetaAvg + double(entry.thermalValue);
 
             (*thetaTmp)(entry.x, entry.y, entry.z, 0) = real_t(thetaNext);
         }
