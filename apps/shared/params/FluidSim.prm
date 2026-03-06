@@ -16,15 +16,15 @@ MeshGeometry
         translate < 0, 0, 0 >;
     }
 
-    Region
-    {
-        name "obstacle";
-        meshFile "geometry/SuspendedPlateONLY_redinnertop_greeninnerrest.PLY";
-        role "SOLID_OBSTACLE";
-         // Mesh file is in mm; convert to meters.
-        scale 0.001;
-        translate < 0, -0.2, 0 >;
-    }
+    // Region
+    // {
+    //     name "obstacle";
+    //     meshFile "geometry/SuspendedPlateONLY_redinnertop_greeninnerrest.PLY";
+    //     role "SOLID_OBSTACLE";
+    //      // Mesh file is in mm; convert to meters.
+    //     scale 0.001;
+    //     translate < 0, -0.2, 0 >;
+    // }
 
     // Required free margin (in fine cells) between mesh and each domain boundary (x,y,z).
     paddingCells < 1, 1, 1 >;
@@ -102,6 +102,7 @@ ColorBC
     // region name semantics:
     //   DIRICHLET* / ADIABATIC* / HEATLOAD* / INLET* / OUTLET* / PRESSURE*
     //   Example: DIRICHLET1, DIRICHLET2, ADIABATIC1, HEATLOAD1, INLET1, OUTLET1, PRESSURE1
+    //   enabled <true|false>   // optional; default false; when false this Region is ignored completely
     //
     // DIRICHLET* regions use:
     //   theta   <value>
@@ -132,6 +133,7 @@ ColorBC
 
     Region
     {
+        enabled true;
         name "DIRICHLET1";
         rgb < 255, 0, 0 >;
         theta 1.0;
@@ -141,6 +143,7 @@ ColorBC
 
     Region
     {
+        enabled true;
         name "DIRICHLET2";
         rgb < 0, 255, 255 >;
         theta 0.0;
@@ -150,43 +153,26 @@ ColorBC
 
     Region
     {
+        enabled true;
         name "ADIABATIC1";
         rgb < 0, 255, 0 >;
     }
 
     // heatload_watts [W/m^2]
-    // Region
-    // {
-    //     name "HEATLOAD1";
-    //     rgb < 0, 255, 255 >;
-    //     heatload_watts 0.0;
-    // }
+    Region
+    {
+        enabled true;
+        name "HEATLOAD1";
+        rgb < 0, 255, 255 >;
+        heatload_watts 0.0;
+    }
 
     Region
     {
+        enabled true;
         name "PRESSURE1";
         rgb < 0, 0, 255 >;
         flow "both";
-        rho 1.0;
-        thermal "Dirichlet";
-        theta 0.0;
-    }
-
-    Region
-    {
-        name "PRESSURE2";
-        rgb < 255, 255, 0 >;
-        flow "in";
-        rho 1.0;
-        thermal "Dirichlet";
-        theta 0.0;
-    }
-
-    Region
-    {
-        name "PRESSURE3";
-        rgb < 255, 0, 255 >;
-        flow "out";
         rho 1.0;
         thermal "Dirichlet";
         theta 0.0;

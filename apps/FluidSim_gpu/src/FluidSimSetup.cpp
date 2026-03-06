@@ -1116,8 +1116,13 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     if (regionBlocks.empty())
         WALBERLA_ABORT("ColorBC requires at least one Region block.");
     bool useOpenBoundary = false;
+    bool hasEnabledColorRegion = false;
     for (const auto& rb : regionBlocks)
     {
+        const bool regionEnabled = rb.getParameter<bool>("enabled", false);
+        if (!regionEnabled)
+            continue;
+        hasEnabledColorRegion = true;
         const std::string regionUid = toUpper(stripQuotes(rb.getParameter<std::string>("name")));
         const auto regionBc = bcIdFromRegionName(regionUid);
         if (regionBc == BC_NONE)
@@ -1131,6 +1136,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
             break;
         }
     }
+    if (!hasEnabledColorRegion)
+        WALBERLA_ABORT("ColorBC has no enabled Region blocks. Set ColorBC.Region.enabled true for at least one region.");
 
     walberla::BlockDataID pdfID;
     walberla::BlockDataID densityID;
@@ -1322,8 +1329,15 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     colorRegionByUid.reserve(regionBlocks.size());
     std::unordered_map<std::uint32_t, std::string> uidByRgb;
     uidByRgb.reserve(regionBlocks.size());
+    size_t disabledColorRegionCount = size_t(0);
     for (const auto& rb : regionBlocks)
     {
+        const bool regionEnabled = rb.getParameter<bool>("enabled", false);
+        if (!regionEnabled)
+        {
+            ++disabledColorRegionCount;
+            continue;
+        }
         ColorRegionConfig region;
         region.uidName = toUpper(stripQuotes(rb.getParameter<std::string>("name")));
         region.bcId = bcIdFromRegionName(region.uidName);
@@ -1476,6 +1490,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         colorRegionByUid.emplace(region.uidName, region);
         colorRegions.push_back(region);
     }
+    if (isRoot && disabledColorRegionCount > size_t(0))
+        WALBERLA_LOG_INFO("ColorBC skipped " << disabledColorRegionCount << " disabled Region block(s).");
     if (hasDirichlet)
         thetaInit = thetaDirichletMin;
     else if (isRoot)
