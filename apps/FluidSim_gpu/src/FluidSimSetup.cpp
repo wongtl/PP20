@@ -1392,14 +1392,14 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                     WALBERLA_ABORT("ColorBC.Region '" << region.uidName
                                    << "' requires L_char > 0 for DIRICHLET regions.");
                 }
-                if (rb.isDefined("Nu_dT"))
+                if (rb.isDefined("Nu_dTheta"))
                 {
                     region.hasNuDeltaThetaOverride = true;
-                    region.nuDeltaThetaOverride = rb.getParameter<real_t>("Nu_dT");
+                    region.nuDeltaThetaOverride = rb.getParameter<real_t>("Nu_dTheta");
                     if (region.nuDeltaThetaOverride <= real_t(0))
                     {
                         WALBERLA_ABORT("ColorBC.Region '" << region.uidName
-                                       << "' requires Nu_dT > 0 when provided.");
+                                       << "' requires Nu_dTheta > 0 when provided.");
                     }
                 }
             }
@@ -1491,18 +1491,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         thetaInit = thetaDirichletMin;
     else if (isRoot)
         WALBERLA_LOG_WARNING("ColorBC has no DIRICHLET* region. Using thetaInit=0 and Nu_* outputs will be undefined.");
-    bool hasNuUsingGlobalDeltaTheta = false;
-    for (const auto& region : colorRegions)
-    {
-        if (region.bcId == BC_DIRICHLET && region.nuOutput && !region.hasNuDeltaThetaOverride)
-        {
-            hasNuUsingGlobalDeltaTheta = true;
-            break;
-        }
-    }
-    if (hasDirichlet && hasNuUsingGlobalDeltaTheta && std::abs(double(thetaDirichletMax - thetaDirichletMin)) <= 1e-15 && isRoot)
-        WALBERLA_LOG_WARNING("DIRICHLET* regions share identical theta values; Nu_* denominator is zero for regions using global DeltaTheta.");
-
     walberla::mesh::ColorToBoundaryMapper<walberla::mesh::TriangleMesh> colorMapper{
         walberla::mesh::BoundaryInfo(walberla::BoundaryUID(kUnmappedBoundaryUid))};
     for (const auto& region : colorRegions)
@@ -2931,15 +2919,14 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     }
     if (isRoot)
     {
-        const double globalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
         for (const auto& region : nuOutputRegions)
         {
             const bool useOverride = region.hasDeltaThetaOverride;
-            const double dTheta = useOverride ? region.deltaThetaOverride : globalDeltaTheta;
+            const double dTheta = useOverride ? region.deltaThetaOverride : 1.0;
             WALBERLA_LOG_INFO("NU_REGION name=" << region.regionName
                              << " L_char_phys=" << (region.lCharLatFine * dxPhysFine)
                              << " L_char_lat=" << region.lCharLatFine
-                             << " dT_source=" << (useOverride ? "Nu_dT" : "global_dirichlet_span")
+                             << " dT_source=" << (useOverride ? "Nu_dTheta" : "default_1")
                              << " dT=" << dTheta);
         }
     }

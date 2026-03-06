@@ -105,8 +105,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
     const auto regionIdID = binding.regionIdID;
 
     auto& currentThetaRef = *binding.currentThetaRef;
-    const real_t thetaDirichletMax = binding.thetaDirichletMax;
-    const real_t thetaDirichletMin = binding.thetaDirichletMin;
     const auto nuFacePrimitive = [](double thetaWall, double thetaFluid, double invDxLocal) {
         return (thetaWall - thetaFluid) * (2.0 * invDxLocal);
     };
@@ -640,13 +638,12 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                     }
                 }
 
-                const double globalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
                 nuByRegion.assign(nuOutputRegions.size(), std::numeric_limits<double>::quiet_NaN());
                 for (size_t i = size_t(0); i < nuOutputRegions.size(); ++i)
                 {
                     const double dTheta = nuOutputRegions[i].hasDeltaThetaOverride
                                             ? nuOutputRegions[i].deltaThetaOverride
-                                            : globalDeltaTheta;
+                                            : 1.0;
                     if (std::abs(dTheta) <= 1e-15)
                     {
                         if (isRoot && (*warnedNuZeroDeltaTheta)[i] == walberla::uint8_t(0))
@@ -655,7 +652,7 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                             WALBERLA_LOG_WARNING(
                                 "Thermal Nu disabled for region '" << nuOutputRegions[i].regionName
                                 << "': DeltaTheta is zero (source="
-                                << (nuOutputRegions[i].hasDeltaThetaOverride ? "Nu_dT" : "global_dirichlet_span")
+                                << (nuOutputRegions[i].hasDeltaThetaOverride ? "Nu_dTheta" : "default_1")
                                 << "). Nu will be NaN for this region.");
                         }
                         continue;
@@ -701,7 +698,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         for (size_t idx = size_t(0); idx < nuVtkFields.size(); ++idx)
             nuVtkFieldSlotByRegionId.emplace(nuVtkFields[idx].regionId, idx);
 
-        const double nuVtkGlobalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
         std::vector<double> nuScaleBySlot(nuVtkFields.size(), std::numeric_limits<double>::quiet_NaN());
         std::vector<real_t> nuValueResetBySlot(nuVtkFields.size(), std::numeric_limits<real_t>::quiet_NaN());
         bool anyValidNuScale = false;
@@ -717,7 +713,7 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                 if (infoIt == nuOutputSlotByRegionId.end())
                     continue;
                 const auto& nuInfo = nuOutputRegions[infoIt->second];
-                const double dTheta = nuInfo.hasDeltaThetaOverride ? nuInfo.deltaThetaOverride : nuVtkGlobalDeltaTheta;
+                const double dTheta = nuInfo.hasDeltaThetaOverride ? nuInfo.deltaThetaOverride : 1.0;
                 if (std::abs(dTheta) <= 1e-15)
                     continue;
                 nuScaleBySlot[slot] = nuInfo.lCharLatFine / dTheta;
