@@ -316,6 +316,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     const double dxMin = std::min({dxX, dxY, dxZ});
     const double dxMax = std::max({dxX, dxY, dxZ});
     constexpr double dxTol = 1e-12;
+    // In the nominal path these are equal by construction, but keep this as a
+    // fail-fast guard for malformed inputs and floating-point drift.
     if (dxMin <= 0.0 || ((dxMax / dxMin) - 1.0) > dxTol)
     {
         WALBERLA_ABORT("Resolution.interiorFineCells + MeshGeometry.paddingCells do not match Physical.full_size isotropically."

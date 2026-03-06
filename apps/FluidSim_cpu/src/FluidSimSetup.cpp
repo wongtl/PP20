@@ -219,6 +219,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     const double dxMin = std::min({dxX, dxY, dxZ});
     const double dxMax = std::max({dxX, dxY, dxZ});
     constexpr double dxTol = 1e-12;
+    // In the nominal path these are equal by construction, but keep this as a
+    // fail-fast guard for malformed inputs and floating-point drift.
     if (dxMin <= 0.0 || ((dxMax / dxMin) - 1.0) > dxTol)
     {
         WALBERLA_ABORT("Resolution.interiorFineCells + MeshGeometry.paddingCells do not match Physical.full_size isotropically."
@@ -2270,6 +2272,9 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
 #ifndef _OPENMP
     (void)outerParallelActive;
 #endif
+    // Keep one sweep instance per thread: generated sweep objects carry mutable
+    // state/scratch (for example theta_ref), so sharing a single instance across
+    // outer OpenMP threads would risk data races.
     std::vector<std::shared_ptr<mphys::hotplate::gen::LBM::StreamCollideDenseSerial>> streamCollideDenseSweepsSerial;
     std::vector<std::shared_ptr<mphys::hotplate::gen::LBM::StreamCollideSerial>> streamCollideSparseSweepsSerial;
     std::vector<mphys::hotplate::gen::ThetaUpdateDenseSerial> thetaDenseSweepsSerial;

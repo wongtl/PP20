@@ -157,14 +157,12 @@ static std::string vec3ToCsv(const walberla::Vector3<T>& v)
     return oss.str();
 }
 
-// Runtime-only string helpers.
-#ifdef FLUIDSIM_RUNTIME_ONLY
+// Shared string helpers.
 static std::string toUpper(std::string s)
 {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::toupper(c)); });
     return s;
 }
-#endif
 
 // Setup-only parsing and metadata helpers.
 #ifndef FLUIDSIM_RUNTIME_ONLY
@@ -203,12 +201,6 @@ static std::map<std::string, std::string> readCheckpointMetadata(const std::file
         data[line.substr(size_t(0), pos)] = line.substr(pos + size_t(1));
     }
     return data;
-}
-
-static std::string toUpper(std::string s)
-{
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::toupper(c)); });
-    return s;
 }
 
 static std::string toLower(std::string s)
