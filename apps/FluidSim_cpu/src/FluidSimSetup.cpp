@@ -233,17 +233,11 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     if (fluidHeightLatFine <= 0.0)
         WALBERLA_ABORT("Computed non-positive fluid height in lattice units.");
     const double dtPhysFine = nuLatTargetFine * dxPhysFine * dxPhysFine / nuPhys;
-    double ra = 0.0;
-    double pr = 0.0;
-    double alphaLatFine = 0.0;
-    double aLatFine = 0.0;
     const double raBase = g * beta * deltaTK * (fluidHeightPhys * fluidHeightPhys * fluidHeightPhys) / (nuPhys * alphaPhys);
-    ra = raBase * raFactor;
-    alphaLatFine = alphaPhys * dtPhysFine / (dxPhysFine * dxPhysFine);
+    const double alphaLatFine = alphaPhys * dtPhysFine / (dxPhysFine * dxPhysFine);
     if (alphaLatFine <= 0.0)
         WALBERLA_ABORT("Computed non-positive alpha_lat on finest level.");
-    pr = nuLatTargetFine / alphaLatFine;
-    aLatFine = raFactor * g * beta * deltaTK * (dtPhysFine * dtPhysFine) / dxPhysFine;
+    const double aLatFine = raFactor * g * beta * deltaTK * (dtPhysFine * dtPhysFine) / dxPhysFine;
 
     // MeshGeometry parsing.
     MeshGeometryConfig meshCfg;
@@ -978,8 +972,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
 
     if (isRoot)
     {
-        WALBERLA_LOG_INFO("STARTUP Ra=" << ra
-                         << " Pr=" << pr
+        WALBERLA_LOG_INFO("STARTUP Ra=" << (raBase * raFactor)
+                         << " Pr=" << (nuLatTargetFine / alphaLatFine)
                          << " dx_phys=" << dxPhysFine
                          << " dt_phys=" << dtPhysStep
                          << " fluid_height=" << fluidHeightPhys
