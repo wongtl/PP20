@@ -72,9 +72,6 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
     auto blockForest = binding.blockForest;
 
     auto& updateThetaRef = binding.updateThetaRef;
-    auto& syncRuntimeToHostTheta = binding.syncRuntimeToHostTheta;
-    auto& syncRuntimeToHostRhoVelTheta = binding.syncRuntimeToHostRhoVelTheta;
-    auto& syncRuntimeToHostPdfThetaRhoVel = binding.syncRuntimeToHostPdfThetaRhoVel;
     auto& applyOpenBoundary = binding.applyOpenBoundary;
     auto& startCommunicatePdfTheta = binding.startCommunicatePdfTheta;
     auto& waitCommunicatePdfTheta = binding.waitCommunicatePdfTheta;
@@ -94,20 +91,11 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
     const auto densityID = binding.densityID;
     const auto velocityID = binding.velocityID;
     const auto thetaID = binding.thetaID;
-    const auto densityRuntimeID = binding.densityRuntimeID;
-    const auto velocityRuntimeID = binding.velocityRuntimeID;
-    const auto thetaRuntimeID = binding.thetaRuntimeID;
     const auto cellTypeID = binding.cellTypeID;
     const auto bcIdID = binding.bcIdID;
     const auto thermalTypeID = binding.thermalTypeID;
     const auto thermalValueID = binding.thermalValueID;
     const auto regionIdID = binding.regionIdID;
-    (void)syncRuntimeToHostTheta;
-    (void)syncRuntimeToHostRhoVelTheta;
-    (void)syncRuntimeToHostPdfThetaRhoVel;
-    (void)densityRuntimeID;
-    (void)velocityRuntimeID;
-    (void)thetaRuntimeID;
 
     auto& currentThetaRef = *binding.currentThetaRef;
     const real_t thetaDirichletMax = binding.thetaDirichletMax;
