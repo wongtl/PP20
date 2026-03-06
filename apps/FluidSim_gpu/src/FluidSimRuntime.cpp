@@ -695,14 +695,108 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
     // VTK output hooks.
     if (vtkWriteFrequency > uint_t(0) || vtkWriteAtStepZero)
     {
+        // Pre-compute constant Nu scale factors (all inputs are binding-time constants).
         std::unordered_map<walberla::uint16_t, size_t> nuVtkFieldSlotByRegionId;
         nuVtkFieldSlotByRegionId.reserve(nuVtkFields.size());
         for (size_t idx = size_t(0); idx < nuVtkFields.size(); ++idx)
             nuVtkFieldSlotByRegionId.emplace(nuVtkFields[idx].regionId, idx);
-        std::unordered_map<walberla::uint16_t, size_t> nuOutputSlotByRegionId;
-        nuOutputSlotByRegionId.reserve(nuOutputRegions.size());
-        for (size_t idx = size_t(0); idx < nuOutputRegions.size(); ++idx)
-            nuOutputSlotByRegionId.emplace(nuOutputRegions[idx].regionId, idx);
+
+        const double nuVtkGlobalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
+        std::vector<double> nuScaleBySlot(nuVtkFields.size(), std::numeric_limits<double>::quiet_NaN());
+        std::vector<real_t> nuValueResetBySlot(nuVtkFields.size(), std::numeric_limits<real_t>::quiet_NaN());
+        bool anyValidNuScale = false;
+        {
+            std::unordered_map<walberla::uint16_t, size_t> nuOutputSlotByRegionId;
+            nuOutputSlotByRegionId.reserve(nuOutputRegions.size());
+            for (size_t idx = size_t(0); idx < nuOutputRegions.size(); ++idx)
+                nuOutputSlotByRegionId.emplace(nuOutputRegions[idx].regionId, idx);
+
+            for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
+            {
+                const auto infoIt = nuOutputSlotByRegionId.find(nuVtkFields[slot].regionId);
+                if (infoIt == nuOutputSlotByRegionId.end())
+                    continue;
+                const auto& nuInfo = nuOutputRegions[infoIt->second];
+                const double dTheta = nuInfo.hasDeltaThetaOverride ? nuInfo.deltaThetaOverride : nuVtkGlobalDeltaTheta;
+                if (std::abs(dTheta) <= 1e-15)
+                    continue;
+                nuScaleBySlot[slot] = nuInfo.lCharLatFine / dTheta;
+                nuValueResetBySlot[slot] = real_t(0);
+                anyValidNuScale = true;
+            }
+        }
+
+        // Pre-compute per-block lists of fluid cells with Nu-relevant Dirichlet wall neighbors.
+        struct NuVtkWallNeighbor
+        {
+            walberla::uint8_t dirIdx;
+            size_t slot;
+            // Cached once from wall field at setup-time. Valid while Dirichlet wall
+            // temperatures are time-invariant; if walls become time-dependent this
+            // must be read at VTK write time (or cache rebuilt).
+            real_t thermalValue;
+        };
+        struct NuVtkFluidCell
+        {
+            int x, y, z;
+            std::vector<NuVtkWallNeighbor> walls;
+        };
+        struct NuVtkBlockRefs
+        {
+            walberla::IBlock* block = nullptr;
+            std::vector<NuVtkFluidCell> cells;
+        };
+        std::vector<NuVtkBlockRefs> nuVtkBlocks;
+        if (anyValidNuScale && !nuVtkFields.empty())
+        {
+            for (auto& block : *blocks)
+            {
+                const auto& boundaryFluidIndices = boundaryFluidIndexList.getVector(block);
+                if (boundaryFluidIndices.empty())
+                    continue;
+                auto* cellType = block.getData<CellTypeField>(cellTypeID);
+                auto* bcId = block.getData<BcField>(bcIdID);
+                auto* thermalType = block.getData<ThermalTypeField>(thermalTypeID);
+                auto* thermalValueF = block.getData<ScalarField>(thermalValueID);
+                auto* regionId = block.getData<RegionIdField>(regionIdID);
+                NuVtkBlockRefs nuBlock;
+                nuBlock.block = &block;
+                for (const auto& idx : boundaryFluidIndices)
+                {
+                    const int x = int(idx.x);
+                    const int y = int(idx.y);
+                    const int z = int(idx.z);
+                    NuVtkFluidCell fluidCell;
+                    fluidCell.x = x;
+                    fluidCell.y = y;
+                    fluidCell.z = z;
+                    for (walberla::uint8_t di = walberla::uint8_t(0); di < walberla::uint8_t(kFaceNbrDirs.size()); ++di)
+                    {
+                        const auto& d = kFaceNbrDirs[size_t(di)];
+                        const int sx = x + d[0];
+                        const int sy = y + d[1];
+                        const int sz = z + d[2];
+                        if ((*cellType)(sx, sy, sz, 0) != CELL_SOLID)
+                            continue;
+                        if ((*bcId)(sx, sy, sz, 0) != BC_DIRICHLET)
+                            continue;
+                        if ((*thermalType)(sx, sy, sz, 0) != THERMAL_DIRICHLET)
+                            continue;
+                        const auto slotIt = nuVtkFieldSlotByRegionId.find((*regionId)(sx, sy, sz, 0));
+                        if (slotIt == nuVtkFieldSlotByRegionId.end())
+                            continue;
+                        const size_t slot = slotIt->second;
+                        if (!std::isfinite(nuScaleBySlot[slot]))
+                            continue;
+                        fluidCell.walls.push_back(NuVtkWallNeighbor{di, slot, (*thermalValueF)(sx, sy, sz, 0)});
+                    }
+                    if (!fluidCell.walls.empty())
+                        nuBlock.cells.push_back(std::move(fluidCell));
+                }
+                if (!nuBlock.cells.empty())
+                    nuVtkBlocks.push_back(std::move(nuBlock));
+            }
+        }
 
         auto vtkStepDue = [&](uint_t step) -> bool {
             if (vtkWriteAtStepZero && step == uint_t(0))
@@ -710,50 +804,26 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
             return cadenceDue(step, vtkWriteFrequency, false);
         };
 
-        auto updateNuFieldsForVtk = [&, nuVtkFieldSlotByRegionId, nuOutputSlotByRegionId]() {
+        auto updateNuFieldsForVtk = [&,
+             nuScaleBySlot = std::move(nuScaleBySlot),
+             nuValueResetBySlot = std::move(nuValueResetBySlot),
+             nuVtkBlocks = std::move(nuVtkBlocks)]() {
             if (nuVtkFields.empty())
                 return;
 
-            std::vector<ScalarField*> nuValueFieldPtrs(nuVtkFields.size(), nullptr);
-            std::vector<ScalarField*> nuCountFieldPtrs(nuVtkFields.size(), nullptr);
-            auto loadNuFieldPtrsForBlock = [&](walberla::IBlock& block) {
-                for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
-                {
-                    nuValueFieldPtrs[slot] = block.getData<ScalarField>(nuVtkFields[slot].valueFieldID);
-                    nuCountFieldPtrs[slot] = block.getData<ScalarField>(nuVtkFields[slot].countFieldID);
-                }
-            };
-
-            const double globalDeltaTheta = double(thetaDirichletMax - thetaDirichletMin);
-            std::vector<double> nuScaleBySlot(nuVtkFields.size(), std::numeric_limits<double>::quiet_NaN());
-            std::vector<real_t> nuValueResetBySlot(nuVtkFields.size(), std::numeric_limits<real_t>::quiet_NaN());
-            bool anyValidNuScale = false;
-            for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
-            {
-                const auto infoIt = nuOutputSlotByRegionId.find(nuVtkFields[slot].regionId);
-                if (infoIt == nuOutputSlotByRegionId.end())
-                    continue;
-                const auto& nuInfo = nuOutputRegions[infoIt->second];
-                const double dTheta = nuInfo.hasDeltaThetaOverride ? nuInfo.deltaThetaOverride : globalDeltaTheta;
-                if (std::abs(dTheta) <= 1e-15)
-                    continue;
-                nuScaleBySlot[slot] = nuInfo.lCharLatFine / dTheta;
-                nuValueResetBySlot[slot] = real_t(0);
-                anyValidNuScale = true;
-            }
-
+            // Reset pass: set all boundary fluid cells' Nu fields to NaN/0.
             for (auto& block : *blocks)
             {
                 const auto& boundaryFluidIndices = boundaryFluidIndexList.getVector(block);
                 if (boundaryFluidIndices.empty())
                     continue;
-                loadNuFieldPtrsForBlock(block);
-                auto* theta = block.getData<ScalarField>(thetaID);
-                auto* cellType = block.getData<CellTypeField>(cellTypeID);
-                auto* bcId = block.getData<BcField>(bcIdID);
-                auto* thermalType = block.getData<ThermalTypeField>(thermalTypeID);
-                auto* thermalValue = block.getData<ScalarField>(thermalValueID);
-                auto* regionId = block.getData<RegionIdField>(regionIdID);
+                std::vector<ScalarField*> nuValueFieldPtrs(nuVtkFields.size(), nullptr);
+                std::vector<ScalarField*> nuCountFieldPtrs(nuVtkFields.size(), nullptr);
+                for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
+                {
+                    nuValueFieldPtrs[slot] = block.getData<ScalarField>(nuVtkFields[slot].valueFieldID);
+                    nuCountFieldPtrs[slot] = block.getData<ScalarField>(nuVtkFields[slot].countFieldID);
+                }
                 for (const auto& idx : boundaryFluidIndices)
                 {
                     const int x = int(idx.x);
@@ -764,41 +834,34 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                         (*nuValueFieldPtrs[slot])(x, y, z, 0) = nuValueResetBySlot[slot];
                         (*nuCountFieldPtrs[slot])(x, y, z, 0) = real_t(0);
                     }
-                    if (!anyValidNuScale)
-                        continue;
+                }
+            }
 
-                    const double thetaFluid = double((*theta)(x, y, z, 0));
-                    for (const auto& d : kFaceNbrDirs)
+            // Compute pass: iterate only pre-computed Nu-relevant fluid cells.
+            for (const auto& nuBlock : nuVtkBlocks)
+            {
+                std::vector<ScalarField*> nuValueFieldPtrs(nuVtkFields.size(), nullptr);
+                std::vector<ScalarField*> nuCountFieldPtrs(nuVtkFields.size(), nullptr);
+                for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
+                {
+                    nuValueFieldPtrs[slot] = nuBlock.block->getData<ScalarField>(nuVtkFields[slot].valueFieldID);
+                    nuCountFieldPtrs[slot] = nuBlock.block->getData<ScalarField>(nuVtkFields[slot].countFieldID);
+                }
+                auto* theta = nuBlock.block->getData<ScalarField>(thetaID);
+                for (const auto& cell : nuBlock.cells)
+                {
+                    const double thetaFluid = double((*theta)(cell.x, cell.y, cell.z, 0));
+                    for (const auto& wall : cell.walls)
                     {
-                        const int sx = x + d[0];
-                        const int sy = y + d[1];
-                        const int sz = z + d[2];
-                        if ((*cellType)(sx, sy, sz, 0) != CELL_SOLID)
-                            continue;
-                        if ((*bcId)(sx, sy, sz, 0) != BC_DIRICHLET)
-                            continue;
-                        if ((*thermalType)(sx, sy, sz, 0) != THERMAL_DIRICHLET)
-                            continue;
-
-                        const auto slotIt = nuVtkFieldSlotByRegionId.find((*regionId)(sx, sy, sz, 0));
-                        if (slotIt == nuVtkFieldSlotByRegionId.end())
-                            continue;
-                        const size_t slot = slotIt->second;
-                        if (!std::isfinite(nuScaleBySlot[slot]))
-                            continue;
-                        const double thetaWall = double((*thermalValue)(sx, sy, sz, 0));
-                        (*nuValueFieldPtrs[slot])(x, y, z, 0) +=
-                            real_t(nuFacePrimitive(thetaWall, thetaFluid, 1.0) * nuScaleBySlot[slot]);
-                        (*nuCountFieldPtrs[slot])(x, y, z, 0) += real_t(1);
+                        (*nuValueFieldPtrs[wall.slot])(cell.x, cell.y, cell.z, 0) +=
+                            real_t(nuFacePrimitive(double(wall.thermalValue), thetaFluid, 1.0) * nuScaleBySlot[wall.slot]);
+                        (*nuCountFieldPtrs[wall.slot])(cell.x, cell.y, cell.z, 0) += real_t(1);
                     }
-
                     for (size_t slot = size_t(0); slot < nuVtkFields.size(); ++slot)
                     {
-                        const real_t count = (*nuCountFieldPtrs[slot])(x, y, z, 0);
+                        const real_t count = (*nuCountFieldPtrs[slot])(cell.x, cell.y, cell.z, 0);
                         if (count > real_t(0))
-                        {
-                            (*nuValueFieldPtrs[slot])(x, y, z, 0) /= count;
-                        }
+                            (*nuValueFieldPtrs[slot])(cell.x, cell.y, cell.z, 0) /= count;
                     }
                 }
             }
