@@ -328,9 +328,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
 
     const double dxPhysFine = dxX;
     const double fluidHeightPhys = fluidHeightInput;
-    const double fluidHeightLatFine = fluidHeightPhys / dxPhysFine;
-    if (fluidHeightLatFine <= 0.0)
-        WALBERLA_ABORT("Computed non-positive fluid height in lattice units.");
     const double dtPhysFine = nuLatTargetFine * dxPhysFine * dxPhysFine / nuPhys;
     const double raBase = g * beta * deltaTK * (fluidHeightPhys * fluidHeightPhys * fluidHeightPhys) / (nuPhys * alphaPhys);
     const double alphaLatFine = alphaPhys * dtPhysFine / (dxPhysFine * dxPhysFine);
