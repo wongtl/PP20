@@ -77,19 +77,6 @@ DomainSetup
     periodic < 0, 0, 0 >;
 }
 
-DualGrid
-{
-    // When enabled, the interior cuboid runs at coarse resolution (coarseRatio:1)
-    // while the boundary shell keeps fine resolution. Reduces active cell count.
-    // coarseMin/coarseMax are in fine-cell coordinates (inclusive/exclusive).
-    // Shell thickness must be >= 2 fine cells on each side.
-    // Coarse extent per axis must be divisible by coarseRatio.
-    enabled 0;
-    coarseMin < 10, 10, 10 >;
-    coarseMax < 92, 92, 92 >;
-    coarseRatio 2;
-}
-
 Parameters
 {
     // timesteps is launcher-owned via run_sim_gpu.sbatch (TIMESTEPS -> --timesteps).
