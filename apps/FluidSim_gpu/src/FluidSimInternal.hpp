@@ -1171,6 +1171,9 @@ static std::filesystem::path maybeCreateOpenMeshCompatiblePly(
 
 static walberla::uint16_t bcIdFromRegionName(const std::string& regionName)
 {
+    // Region-name contract is PREFIX + positive numeric suffix, e.g. DIRICHLET1.
+    // Bare prefixes (e.g. DIRICHLET) and zero-only suffixes (e.g. DIRICHLET0)
+    // are rejected to keep region identifiers explicit.
     const std::string name = toUpper(regionName);
     auto hasPositiveNumericSuffix = [&](const std::string& prefix) {
         if (name.rfind(prefix, size_t(0)) != size_t(0))

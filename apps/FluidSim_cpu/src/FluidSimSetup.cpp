@@ -1033,7 +1033,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         if (regionBc == BC_NONE)
         {
             WALBERLA_ABORT("Unsupported ColorBC.Region name: " << regionUid
-                           << ". Expected one of DIRICHLET*, ADIABATIC*, HEATLOAD*, INLET*, OUTLET*, PRESSURE*.");
+                           << ". Expected <PREFIX><positive integer suffix>. Bare names (DIRICHLET) and zero-only suffixes (DIRICHLET0)"
+                           << " are invalid.");
         }
         if (regionBc == BC_INLET || regionBc == BC_OUTLET || regionBc == BC_PRESSURE)
         {
@@ -1164,7 +1165,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         region.bcId = bcIdFromRegionName(region.uidName);
         if (region.bcId == BC_NONE)
             WALBERLA_ABORT("Unsupported ColorBC.Region name: " << region.uidName
-                           << ". Expected one of DIRICHLET*, ADIABATIC*, HEATLOAD*, INLET*, OUTLET*, PRESSURE*.");
+                           << ". Expected <PREFIX><positive integer suffix>. Bare names (DIRICHLET) and zero-only suffixes (DIRICHLET0)"
+                           << " are invalid.");
         const walberla::Vector3<int> rgb = rb.getParameter<walberla::Vector3<int>>("rgb");
         region.r = rgb[0];
         region.g = rgb[1];

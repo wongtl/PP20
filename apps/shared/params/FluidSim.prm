@@ -94,38 +94,39 @@ Parameters
 ColorBC
 {
     // thermal options:
-    //   DIRICHLET* / ADIABATIC* / HEATLOAD*:
+    //   DIRICHLET<N> / ADIABATIC<N> / HEATLOAD<N>:
     //     thermal type is inferred from region name prefix (thermal field assumed).
-    //   INLET* / OUTLET* / PRESSURE*:
+    //   INLET<N> / OUTLET<N> / PRESSURE<N>:
     //     thermal must be provided explicitly as "Dirichlet" or "Adiabatic".
     //
     // region name semantics:
-    //   DIRICHLET* / ADIABATIC* / HEATLOAD* / INLET* / OUTLET* / PRESSURE*
+    //   DIRICHLET<N> / ADIABATIC<N> / HEATLOAD<N> / INLET<N> / OUTLET<N> / PRESSURE<N>
+    //   where <N> is a positive integer suffix (not empty, not all zeros).
     //   Example: DIRICHLET1, DIRICHLET2, ADIABATIC1, HEATLOAD1, INLET1, OUTLET1, PRESSURE1
     //   enabled <true|false>   // optional; default false; when false this Region is ignored completely
     //
-    // DIRICHLET* regions use:
+    // DIRICHLET<N> regions use:
     //   theta   <value>
     //   L_char  <value>        // required characteristic length for this region's Nu scaling
     //   Nu      <true|false>   // enable Nu logging as Nu_<NormalizedName>
     //   Nu_dT   <value>        // optional positive DeltaTheta override for this region
     //                          // e.g. DIRICHLET1 -> Nu_1, DIRICHLET2 -> Nu_2
     //
-    // ADIABATIC* regions use:
+    // ADIABATIC<N> regions use:
     //   (no thermal value input)
     //
-    // HEATLOAD* regions use:
+    // HEATLOAD<N> regions use:
     //   heatload_watts <value>
     //   Input q'' in W/m^2, converted to finest-level lattice heatload via:
     //   heatload_lat = heatload_watts * dx_phys / (k_phys * deltaT_K)
     //
-    // INLET*/OUTLET* regions use:
+    // INLET<N>/OUTLET<N> regions use:
     //   velocity <ux,uy,uz>
     //   rho      <value>
     //   thermal  "Dirichlet" or "Adiabatic"
     //   theta    <value>
     //
-    // PRESSURE* regions use:
+    // PRESSURE<N> regions use:
     //   flow     "both" | "in" | "out"   // optional; default "both"
     //   rho      <value>
     //   thermal  "Dirichlet" or "Adiabatic"
