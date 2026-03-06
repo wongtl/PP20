@@ -540,11 +540,11 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     if (rootBlockCounts[0] == uint_t(0) || rootBlockCounts[1] == uint_t(0) || rootBlockCounts[2] == uint_t(0))
         WALBERLA_ABORT("Derived rootBlocks entries must be > 0.");
 
-    const real_t resolutionScaleCoarse = real_t(1.0) / real_t(dxPhysFine);
-    if (resolutionScaleCoarse <= real_t(0))
+    const real_t physToLatticeScale = real_t(1.0) / real_t(dxPhysFine);
+    if (physToLatticeScale <= real_t(0))
         WALBERLA_ABORT("Computed non-positive mesh scale; check Physical.full_size and Resolution.interiorFineCells.");
     for (auto& region : geometryRegions)
-        walberla::mesh::scale(*region.mesh, walberla::Vector3<real_t>(resolutionScaleCoarse));
+        walberla::mesh::scale(*region.mesh, walberla::Vector3<real_t>(physToLatticeScale));
 
     const walberla::math::AABB domainAabb(
         real_t(0), real_t(0), real_t(0),
@@ -968,14 +968,12 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                        << " Received levels=" << levels
                        << ". Use a single-level block layout.");
     }
-    const double dtPhysStep = dtPhysFine;
-
     if (isRoot)
     {
         WALBERLA_LOG_INFO("STARTUP Ra=" << (raBase * raFactor)
                          << " Pr=" << (nuLatTargetFine / alphaLatFine)
                          << " dx_phys=" << dxPhysFine
-                         << " dt_phys=" << dtPhysStep
+                         << " dt_phys=" << dtPhysFine
                          << " fluid_height=" << fluidHeightPhys
                          << " dT=" << deltaTK
                          << " nu_target_lat=" << nuLatTargetFine
