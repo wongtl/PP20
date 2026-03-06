@@ -758,11 +758,7 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         // Pre-compute per-block lists of fluid cells with Nu-relevant Dirichlet wall neighbors.
         struct NuVtkWallNeighbor
         {
-            walberla::uint8_t dirIdx;
             size_t slot;
-            // Cached once from wall field at setup-time. Valid while Dirichlet wall
-            // temperatures are time-invariant; if walls become time-dependent this
-            // must be read at VTK write time (or cache rebuilt).
             real_t thermalValue;
         };
         struct NuVtkFluidCell
@@ -799,9 +795,8 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                     fluidCell.x = x;
                     fluidCell.y = y;
                     fluidCell.z = z;
-                    for (walberla::uint8_t di = walberla::uint8_t(0); di < walberla::uint8_t(kFaceNbrDirs.size()); ++di)
+                    for (const auto& d : kFaceNbrDirs)
                     {
-                        const auto& d = kFaceNbrDirs[size_t(di)];
                         const int sx = x + d[0];
                         const int sy = y + d[1];
                         const int sz = z + d[2];
@@ -817,7 +812,7 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                         const size_t slot = slotIt->second;
                         if (!std::isfinite(nuScaleBySlot[slot]))
                             continue;
-                        fluidCell.walls.push_back(NuVtkWallNeighbor{di, slot, (*thermalValueF)(sx, sy, sz, 0)});
+                        fluidCell.walls.push_back(NuVtkWallNeighbor{slot, (*thermalValueF)(sx, sy, sz, 0)});
                     }
                     if (!fluidCell.walls.empty())
                         nuBlock.cells.push_back(std::move(fluidCell));
