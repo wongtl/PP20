@@ -1783,7 +1783,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     SparseCellIndexList pressureInBoundaryFluidIndexList(*blocks);
     SparseCellIndexList pressureOutBoundaryFluidIndexList(*blocks);
     SparseCellIndexList pressureBothBoundaryFluidIndexList(*blocks);
-    std::vector<walberla::Block*> blocksL0;
     std::vector<walberla::Block*> fullFluidBlocks;
     std::vector<walberla::Block*> mixedBlocks;
     std::vector<walberla::Block*> boundaryBlocks;
@@ -1794,7 +1793,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     std::vector<walberla::Block*> pressureOutBlocks;
     std::vector<walberla::Block*> pressureBothBlocks;
     const size_t localBlockCountReserve = size_t(blocks->getNumberOfBlocks());
-    blocksL0.reserve(localBlockCountReserve);
     fullFluidBlocks.reserve(localBlockCountReserve);
     mixedBlocks.reserve(localBlockCountReserve);
     boundaryBlocks.reserve(localBlockCountReserve);
@@ -1824,8 +1822,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         auto* bcId = block.getData<BcField>(bcIdID);
         const auto& domainBB = domainBB0;
         const auto bb = blocks->getBlockCellBB(block);
-
-        blocksL0.push_back(blockPtr);
 
         bool isFullFluid = true;
         {
@@ -2677,8 +2673,11 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
             applyMeshThermalBC();
 
             #pragma omp parallel for schedule(static)
-            for (int64_t i = 0; i < int64_t(blocksL0.size()); ++i)
-                swapTheta(blocksL0[size_t(i)]);
+            for (int64_t i = 0; i < int64_t(fullFluidBlocks.size()); ++i)
+                swapTheta(fullFluidBlocks[size_t(i)]);
+            #pragma omp parallel for schedule(static)
+            for (int64_t i = 0; i < int64_t(mixedBlocks.size()); ++i)
+                swapTheta(mixedBlocks[size_t(i)]);
             return;
         }
 #endif
@@ -2689,7 +2688,9 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         clampOpenBoundaryThetaTmp();
         communicateThetaTmp();
         applyMeshThermalBC();
-        for (auto* block : blocksL0)
+        for (auto* block : fullFluidBlocks)
+            swapTheta(block);
+        for (auto* block : mixedBlocks)
             swapTheta(block);
     };
 
