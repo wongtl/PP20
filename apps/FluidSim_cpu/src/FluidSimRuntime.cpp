@@ -556,6 +556,41 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         nuOutputLabels.reserve(nuOutputRegions.size());
         for (const auto& region : nuOutputRegions)
             nuOutputLabels.push_back(nuOutputLabelFromRegionName(region.regionName));
+
+        struct ThermalNuCellRef
+        {
+            const ThermalBoundaryCell* cell = nullptr;
+            size_t slot = size_t(0);
+        };
+        struct ThermalNuBlockRefs
+        {
+            walberla::IBlock* block = nullptr;
+            std::vector<ThermalNuCellRef> cells;
+        };
+        // Pre-filter once: keep only Nu-relevant Dirichlet thermal entries and
+        // resolve region->slot mapping up front to avoid repeated checks/log-interval.
+        std::vector<ThermalNuBlockRefs> thermalNuBlocks;
+        thermalNuBlocks.reserve(thermalBCBlocks.size());
+        for (const auto& blockEntry : thermalBCBlocks)
+        {
+            if (blockEntry.entries == nullptr)
+                continue;
+            ThermalNuBlockRefs nuBlock;
+            nuBlock.block = blockEntry.block;
+            nuBlock.cells.reserve(blockEntry.entries->size());
+            for (const auto& entry : *blockEntry.entries)
+            {
+                if (entry.thermalType != THERMAL_DIRICHLET || entry.bcId != BC_DIRICHLET)
+                    continue;
+                const auto slotIt = nuRegionSlotById.find(entry.regionId);
+                if (slotIt == nuRegionSlotById.end())
+                    continue;
+                nuBlock.cells.push_back(ThermalNuCellRef{&entry, slotIt->second});
+            }
+            if (!nuBlock.cells.empty())
+                thermalNuBlocks.push_back(std::move(nuBlock));
+        }
+
         auto warnedNuZeroArea = std::make_shared<std::vector<walberla::uint8_t>>(nuOutputRegions.size(), walberla::uint8_t(0));
         auto warnedNuZeroDeltaTheta = std::make_shared<std::vector<walberla::uint8_t>>(nuOutputRegions.size(), walberla::uint8_t(0));
         std::vector<double> reduceLocal(nuOutputRegions.size() * size_t(2), 0.0);
@@ -564,7 +599,8 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
         std::vector<double> localArea(nuOutputRegions.size(), 0.0);
         std::vector<double> nuByRegion(nuOutputRegions.size(), std::numeric_limits<double>::quiet_NaN());
         loop.addFuncAfterTimeStep(
-            [&, nuRegionSlotById, nuOutputLabels, warnedNuZeroArea, warnedNuZeroDeltaTheta,
+            [&, nuOutputLabels, warnedNuZeroArea, warnedNuZeroDeltaTheta,
+             thermalNuBlocks = std::move(thermalNuBlocks),
              reduceLocal = std::move(reduceLocal), reduceGlobal = std::move(reduceGlobal),
              localFluxArea = std::move(localFluxArea), localArea = std::move(localArea),
              nuByRegion = std::move(nuByRegion)]() mutable {
@@ -578,17 +614,13 @@ int runFluidSimRuntime(FluidSimRuntimeBindings& binding)
                 std::fill(localArea.begin(), localArea.end(), 0.0);
                 std::fill(reduceLocal.begin(), reduceLocal.end(), 0.0);
                 std::fill(reduceGlobal.begin(), reduceGlobal.end(), 0.0);
-                for (const auto& blockEntry : thermalBCBlocks)
+                for (const auto& blockEntry : thermalNuBlocks)
                 {
                     auto* theta = blockEntry.block->getData<ScalarField>(thetaID);
-                    for (const auto& entry : *blockEntry.entries)
+                    for (const auto& ref : blockEntry.cells)
                     {
-                        if (entry.thermalType != THERMAL_DIRICHLET || entry.bcId != BC_DIRICHLET)
-                            continue;
-                        const auto slotIt = nuRegionSlotById.find(entry.regionId);
-                        if (slotIt == nuRegionSlotById.end())
-                            continue;
-                        const size_t slot = slotIt->second;
+                        const auto& entry = *ref.cell;
+                        const size_t slot = ref.slot;
 
                         for (walberla::uint8_t nbrIdx = walberla::uint8_t(0); nbrIdx < entry.fluidNeighborCount; ++nbrIdx)
                         {
