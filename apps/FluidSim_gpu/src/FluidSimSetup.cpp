@@ -1557,9 +1557,10 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         {
             const auto fh = *faceIt;
             BoundaryRegionMapping mapping;
-            const auto uid = toUpper((*(region.boundaryLocations))[fh].getUid().getIdentifier());
-            if (uid != kUnmappedBoundaryUid)
+            const std::string uidRaw = (*(region.boundaryLocations))[fh].getUid().getIdentifier();
+            if (uidRaw != kUnmappedBoundaryUid)
             {
+                const std::string uid = toUpper(uidRaw);
                 const auto mapIt = colorRegionByUid.find(uid);
                 if (mapIt != colorRegionByUid.end())
                     mapping = mappingFromColorRegion(mapIt->second);
