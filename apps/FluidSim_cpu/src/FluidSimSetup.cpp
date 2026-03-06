@@ -711,10 +711,12 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                     return 0.0;
                 }
             };
-            constexpr double restartMetaTol = 1e-5;
-            auto nearlyEqual = [](double a, double b) {
-                const double tol = restartMetaTol;
-                return std::abs(a - b) <= tol * std::max<double>(1.0, std::max(std::abs(a), std::abs(b)));
+            constexpr double kRestartMetaRelTol = 1e-5;
+            constexpr double kRestartMetaAbsTol = 1e-5;
+            auto nearlyEqual = [kRestartMetaRelTol, kRestartMetaAbsTol](double a, double b) {
+                const double scale = std::max(std::abs(a), std::abs(b));
+                const double tol = std::max(kRestartMetaAbsTol, kRestartMetaRelTol * scale);
+                return std::abs(a - b) <= tol;
             };
             auto splitByPipe = [](const std::string& value) {
                 std::vector<std::string> parts;
