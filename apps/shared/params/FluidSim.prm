@@ -128,7 +128,7 @@ ColorBC
     //   theta    <value>
     //
     // PRESSURE<N> regions use:
-    //   flow     "both" | "in" | "out"   // optional; default "both"
+    //   flow     "in" | "out"   // required
     //   rho      <value>
     //   thermal  "Dirichlet" or "Adiabatic"
     //   theta    <value>
@@ -174,7 +174,7 @@ ColorBC
         enabled false;
         name "PRESSURE1";
         rgb < 0, 0, 255 >;
-        flow "both";
+        flow "out";
         rho 1.0;
         thermal "Dirichlet";
         theta 0.0;

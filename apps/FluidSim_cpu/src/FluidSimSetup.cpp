@@ -1189,7 +1189,9 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
             region.flowRho = rb.getParameter<real_t>("rho");
             if (region.flowRho <= real_t(0))
                 WALBERLA_ABORT("ColorBC.Region '" << region.uidName << "' requires rho > 0 for pressure boundaries.");
-            region.pressureFlowMode = pressureFlowModeFromString(rb.getParameter<std::string>("flow", "both"));
+            if (!rb.isDefined("flow"))
+                WALBERLA_ABORT("ColorBC.Region '" << region.uidName << "' requires flow=\"in\" or flow=\"out\" for pressure boundaries.");
+            region.pressureFlowMode = pressureFlowModeFromString(rb.getParameter<std::string>("flow"));
             const auto pressureThermal = thermalTypeFromString(rb.getParameter<std::string>("thermal"));
             if (pressureThermal != THERMAL_DIRICHLET && pressureThermal != THERMAL_ADIABATIC)
             {
@@ -1340,7 +1342,7 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         real_t flowRho = real_t(1);
         real_t flowTheta = real_t(0);
         walberla::Vector3<real_t> flowVelocity = walberla::Vector3<real_t>(real_t(0));
-        walberla::uint8_t pressureFlowMode = PRESSURE_FLOW_BOTH;
+        walberla::uint8_t pressureFlowMode = PRESSURE_FLOW_INVALID;
         int nearestRegionIdx = -1;
     };
     auto mappingFromColorRegion = [](const ColorRegionConfig& cfg) -> BoundaryRegionMapping {
@@ -1768,7 +1770,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     SparseCellIndexList pressureBoundaryFluidIndexList(*blocks);
     SparseCellIndexList pressureInBoundaryFluidIndexList(*blocks);
     SparseCellIndexList pressureOutBoundaryFluidIndexList(*blocks);
-    SparseCellIndexList pressureBothBoundaryFluidIndexList(*blocks);
     std::vector<walberla::Block*> fullFluidBlocks;
     std::vector<walberla::Block*> mixedBlocks;
     std::vector<walberla::Block*> boundaryBlocks;
@@ -1777,7 +1778,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     std::vector<walberla::Block*> pressureBlocks;
     std::vector<walberla::Block*> pressureInBlocks;
     std::vector<walberla::Block*> pressureOutBlocks;
-    std::vector<walberla::Block*> pressureBothBlocks;
     const size_t localBlockCountReserve = size_t(blocks->getNumberOfBlocks());
     fullFluidBlocks.reserve(localBlockCountReserve);
     mixedBlocks.reserve(localBlockCountReserve);
@@ -1787,7 +1787,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
     pressureBlocks.reserve(localBlockCountReserve);
     pressureInBlocks.reserve(localBlockCountReserve);
     pressureOutBlocks.reserve(localBlockCountReserve);
-    pressureBothBlocks.reserve(localBlockCountReserve);
     const bool storeBoundaryFluidIndices = (vtkWriteFrequency > uint_t(0));
     const bool hasInletBoundarySolids = (inletBoundarySolidGlobal > std::uint64_t(0));
     const bool hasOutletBoundarySolids = (outletBoundarySolidGlobal > std::uint64_t(0));
@@ -2016,7 +2015,7 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         }
     }
 
-    std::vector<walberla::uint8_t> pressureFlowModeByRegionId(colorRegions.size() + size_t(1), PRESSURE_FLOW_BOTH);
+    std::vector<walberla::uint8_t> pressureFlowModeByRegionId(colorRegions.size() + size_t(1), PRESSURE_FLOW_INVALID);
     for (const auto& region : colorRegions)
     {
         if (region.bcId == BC_PRESSURE)
@@ -2100,10 +2099,8 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                 auto* flowVelocity = block->getData<VecField>(flowVelocityID);
                 auto& pressureInCells = pressureInBoundaryFluidIndexList.getVector(*block);
                 auto& pressureOutCells = pressureOutBoundaryFluidIndexList.getVector(*block);
-                auto& pressureBothCells = pressureBothBoundaryFluidIndexList.getVector(*block);
                 pressureInCells.clear();
                 pressureOutCells.clear();
-                pressureBothCells.clear();
                 const auto bb = blocks->getBlockCellBB(*block);
                 for (const auto& idx : pressureBoundaryFluidIndexList.getVector(*block))
                 {
@@ -2166,6 +2163,22 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                             hasFlowIn = true;
                         else if (flowMode == PRESSURE_FLOW_OUT)
                             hasFlowOut = true;
+                        else
+                        {
+                            const int gx = int(bb.xMin()) + x;
+                            const int gy = int(bb.yMin()) + y;
+                            const int gz = int(bb.zMin()) + z;
+                            const int gnx = int(bb.xMin()) + nx;
+                            const int gny = int(bb.yMin()) + ny;
+                            const int gnz = int(bb.zMin()) + nz;
+                            WALBERLA_ABORT(
+                                "Pressure-boundary flow mode classification failed: invalid flow mode at PRESSURE neighbor."
+                                << " fluidLocal=<" << x << "," << y << "," << z << ">"
+                                << " fluidGlobal=<" << gx << "," << gy << "," << gz << ">"
+                                << " neighborLocal=<" << nx << "," << ny << "," << nz << ">"
+                                << " neighborGlobal=<" << gnx << "," << gny << "," << gnz << ">"
+                                << " flowMode=" << int(flowMode) << ".");
+                        }
                     }
 
                     if (count == uint_t(0))
@@ -2217,21 +2230,26 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
                     else if (hasFlowOut)
                         pressureOutCells.emplace_back(walberla::Cell(x, y, z));
                     else
-                        pressureBothCells.emplace_back(walberla::Cell(x, y, z));
+                    {
+                        const int gx = int(bb.xMin()) + x;
+                        const int gy = int(bb.yMin()) + y;
+                        const int gz = int(bb.zMin()) + z;
+                        WALBERLA_ABORT(
+                            "Pressure-boundary flow mode classification failed: no PRESSURE neighbor provided flow=\"in\" or flow=\"out\"."
+                            << " localCell=<" << x << "," << y << "," << z << ">"
+                            << " globalCell=<" << gx << "," << gy << "," << gz << ">.");
+                    }
                 }
             }
 
         pressureInBlocks.clear();
         pressureOutBlocks.clear();
-        pressureBothBlocks.clear();
         for (auto* block : pressureBlocks)
         {
             if (!pressureInBoundaryFluidIndexList.getVector(*block).empty())
                 pressureInBlocks.push_back(block);
             if (!pressureOutBoundaryFluidIndexList.getVector(*block).empty())
                 pressureOutBlocks.push_back(block);
-            if (!pressureBothBoundaryFluidIndexList.getVector(*block).empty())
-                pressureBothBlocks.push_back(block);
         }
     };
     if (useOpenBoundary)
@@ -2425,7 +2443,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
 
     std::shared_ptr<mphys::hotplate::gen::OpenBoundaryReconstructInletSerial> openBoundaryInletSweepSerial;
     std::shared_ptr<mphys::hotplate::gen::OpenBoundaryReconstructOutletSerial> openBoundaryOutletSweepSerial;
-    std::shared_ptr<mphys::hotplate::gen::OpenBoundaryReconstructPressureBothSerial> openBoundaryPressureBothSweepSerial;
     std::shared_ptr<mphys::hotplate::gen::OpenBoundaryReconstructPressureInSerial> openBoundaryPressureInSweepSerial;
     std::shared_ptr<mphys::hotplate::gen::OpenBoundaryReconstructPressureOutSerial> openBoundaryPressureOutSweepSerial;
     std::shared_ptr<mphys::hotplate::gen::ClampOpenBoundaryThetaTmpInletSerial> clampInletSweepSerial;
@@ -2449,15 +2466,6 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
             outletBoundaryFluidIndexList,
             pdfID,
             thetaID,
-            double(aLatLevel),
-            double(initialThetaRefForForce));
-        openBoundaryPressureBothSweepSerial = std::make_shared<mphys::hotplate::gen::OpenBoundaryReconstructPressureBothSerial>(
-            bcIdID,
-            flowRhoID,
-            pressureBothBoundaryFluidIndexList,
-            pdfID,
-            thetaID,
-            velocityID,
             double(aLatLevel),
             double(initialThetaRefForForce));
         openBoundaryPressureInSweepSerial = std::make_shared<mphys::hotplate::gen::OpenBoundaryReconstructPressureInSerial>(
@@ -2493,20 +2501,16 @@ int runFluidSimSetupAndRuntime(int argc, char** argv)
         const double thetaRef = double(currentThetaRef);
         auto& inletSweep = *openBoundaryInletSweepSerial;
         auto& outletSweep = *openBoundaryOutletSweepSerial;
-        auto& pressureBothSweep = *openBoundaryPressureBothSweepSerial;
         auto& pressureInSweep = *openBoundaryPressureInSweepSerial;
         auto& pressureOutSweep = *openBoundaryPressureOutSweepSerial;
         inletSweep.theta_ref() = thetaRef;
         outletSweep.theta_ref() = thetaRef;
-        pressureBothSweep.theta_ref() = thetaRef;
         pressureInSweep.theta_ref() = thetaRef;
         pressureOutSweep.theta_ref() = thetaRef;
         for (auto* block : inletBlocks)
             inletSweep(block);
         for (auto* block : outletBlocks)
             outletSweep(block);
-        for (auto* block : pressureBothBlocks)
-            pressureBothSweep(block);
         for (auto* block : pressureInBlocks)
             pressureInSweep(block);
         for (auto* block : pressureOutBlocks)

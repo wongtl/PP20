@@ -40,7 +40,7 @@ constexpr walberla::uint16_t BC_HEATLOAD = walberla::uint16_t(3);
 constexpr walberla::uint16_t BC_INLET = walberla::uint16_t(4);
 constexpr walberla::uint16_t BC_OUTLET = walberla::uint16_t(5);
 constexpr walberla::uint16_t BC_PRESSURE = walberla::uint16_t(6);
-constexpr walberla::uint8_t PRESSURE_FLOW_BOTH = walberla::uint8_t(0);
+constexpr walberla::uint8_t PRESSURE_FLOW_INVALID = walberla::uint8_t(0);
 constexpr walberla::uint8_t PRESSURE_FLOW_IN = walberla::uint8_t(1);
 constexpr walberla::uint8_t PRESSURE_FLOW_OUT = walberla::uint8_t(2);
 constexpr walberla::uint8_t THERMAL_NONE = walberla::uint8_t(0);
@@ -115,7 +115,7 @@ struct ColorRegionConfig
     real_t flowRho = real_t(1);
     real_t flowTheta = real_t(0);
     walberla::Vector3<real_t> flowVelocity = walberla::Vector3<real_t>(real_t(0));
-    walberla::uint8_t pressureFlowMode = PRESSURE_FLOW_BOTH;
+    walberla::uint8_t pressureFlowMode = PRESSURE_FLOW_INVALID;
     int r = 0;
     int g = 0;
     int b = 0;
@@ -1203,14 +1203,12 @@ static walberla::uint8_t thermalTypeFromString(const std::string& thermalString)
 static walberla::uint8_t pressureFlowModeFromString(const std::string& flowString)
 {
     const std::string flow = toUpper(stripQuotes(flowString));
-    if (flow == "BOTH")
-        return PRESSURE_FLOW_BOTH;
     if (flow == "IN")
         return PRESSURE_FLOW_IN;
     if (flow == "OUT")
         return PRESSURE_FLOW_OUT;
     WALBERLA_ABORT("Unsupported ColorBC.Region flow '" << flowString
-                   << "'. Expected both, in, or out.");
+                   << "'. Expected in or out.");
 }
 
 static GeometryRole geometryRoleFromString(const std::string& roleString)

@@ -276,13 +276,6 @@ with SourceFileGenerator(keep_unknown_argv=True) as sfg:
     )
     generate_sweep(
         sfg,
-        "OpenBoundaryReconstructPressureBothSerial",
-        make_open_boundary_reconstruct_assignments(BC_PRESSURE, "pressure_both"),
-        open_boundary_serial_cfg,
-        sparse=True,
-    )
-    generate_sweep(
-        sfg,
         "OpenBoundaryReconstructPressureInSerial",
         make_open_boundary_reconstruct_assignments(BC_PRESSURE, "pressure_in"),
         open_boundary_serial_cfg,
